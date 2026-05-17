@@ -1,0 +1,61 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 60" width="160" height="60">
+  <defs>
+    <style>
+      @keyframes dotg { 0%,100%{opacity:1} 50%{opacity:0.4} }
+      @keyframes pingA { 0%{r:6;opacity:0.9;stroke-width:1.5} 100%{r:18;opacity:0;stroke-width:0.3} }
+      @keyframes pingB { 0%{r:6;opacity:0.9;stroke-width:1.5} 100%{r:18;opacity:0;stroke-width:0.3} }
+      @keyframes pingC { 0%{r:6;opacity:0.9;stroke-width:1.5} 100%{r:18;opacity:0;stroke-width:0.3} }
+      @keyframes dm    { 0%{stroke-dashoffset:0} 100%{stroke-dashoffset:-12} }
+      .nd1{animation:dotg  2s ease-in-out infinite 0s}
+      .nd2{animation:dotg  2s ease-in-out infinite 0.5s}
+      .nd3{animation:dotg  2s ease-in-out infinite 1s}
+      .nr1{animation:dotg  2s ease-in-out infinite 0s}
+      .nr2{animation:dotg  2s ease-in-out infinite 0.5s}
+      .nr3{animation:dotg  2s ease-in-out infinite 1s}
+      .p1 {animation:pingA 2s ease-out    infinite 0s}
+      .p2 {animation:pingB 2s ease-out    infinite 0.5s}
+      .p3 {animation:pingC 2s ease-out    infinite 1s}
+      .dl1{animation:dm    1.2s linear    infinite 0s}
+      .dl2{animation:dm    1.2s linear    infinite 0.4s}
+    </style>
+  </defs>
+
+  <!-- ── E shape ── -->
+  <!-- vertical bar -->
+  <rect x="2"  y="2"  width="9"  height="56" rx="2" fill="#4a9eff"/>
+  <!-- top bar -->
+  <rect x="11" y="2"  width="26" height="8"  rx="2" fill="#4a9eff"/>
+  <!-- mid bar — centered: 56/2=28, bar 8px tall so y=24 -->
+  <rect x="11" y="24" width="20" height="8"  rx="2" fill="#4a9eff"/>
+  <!-- bot bar -->
+  <rect x="11" y="50" width="26" height="8"  rx="2" fill="#4a9eff"/>
+
+  <!-- ── NODE TOP: right tip of top bar = x=37, center y=6 ── -->
+  <circle cx="37" cy="6"  r="18" fill="none" stroke="#2ec8b8" class="p1"/>
+  <circle cx="37" cy="6"  r="6"  fill="none" stroke="#2ec8b8" stroke-width="1.5" class="nr1"/>
+  <circle cx="37" cy="6"  r="2.5" fill="#2ec8b8" class="nd1"/>
+
+  <!-- ── NODE MID: right tip of mid bar = x=31, center y=28 ── -->
+  <circle cx="31" cy="28" r="18" fill="none" stroke="#2ec8b8" class="p2"/>
+  <circle cx="31" cy="28" r="6"  fill="none" stroke="#2ec8b8" stroke-width="1.5" class="nr2"/>
+  <circle cx="31" cy="28" r="2.5" fill="#2ec8b8" class="nd2"/>
+
+  <!-- ── NODE BOT: right tip of bot bar = x=37, center y=54 ── -->
+  <circle cx="37" cy="54" r="18" fill="none" stroke="#2ec8b8" class="p3"/>
+  <circle cx="37" cy="54" r="6"  fill="none" stroke="#2ec8b8" stroke-width="1.5" class="nr3"/>
+  <circle cx="37" cy="54" r="2.5" fill="#2ec8b8" class="nd3"/>
+
+  <!-- ── dashes ── -->
+  <line x1="37" y1="12" x2="33" y2="22" stroke="#2ec8b8" stroke-width="1.2" stroke-dasharray="3,3" class="dl1" opacity="0.6"/>
+  <line x1="33" y1="34" x2="37" y2="48" stroke="#2ec8b8" stroke-width="1.2" stroke-dasharray="3,3" class="dl2" opacity="0.6"/>
+
+  <!-- ── text ── -->
+  <text x="54" y="34"
+    font-family="'JetBrains Mono','Fira Code',Consolas,monospace"
+    font-size="20" font-weight="800"
+    fill="#4a9eff" letter-spacing="1">E-NMOS</text>
+  <text x="55" y="50"
+    font-family="'JetBrains Mono','Fira Code',Consolas,monospace"
+    font-size="10" font-weight="500"
+    fill="#2ec8b8" letter-spacing="4">BY EMIR</text>
+</svg>
