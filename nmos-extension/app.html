@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>E-NMOS</title>
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+
+<div class="header">
+  <div class="logo">
+    <img src="logo.svg" height="48" alt="E-NMOS" style="display:block"/>
+  </div>
+  <div class="url-bar">
+    <span class="url-label">URL</span>
+    <input id="ip-input" type="text" placeholder="http://10.101.99.26/x-nmos" spellcheck="false" autocomplete="off" />
+  </div>
+  <button class="btn btn-ghost" id="btn-auto">⟳ AUTO</button>
+  <button class="btn btn-primary" id="btn-query">▶ QUERY</button>
+</div>
+
+<div class="statusbar">
+  <div class="status-pill s-idle" id="status-pill"><span class="status-dot"></span><span id="status-text">IDLE</span></div>
+  <div class="chips" id="chips" style="display:none">
+    <div class="chip">Nodes <b id="cnt-nodes">0</b></div>
+    <div class="chip">Devices <b id="cnt-devices">0</b></div>
+    <div class="chip">Senders <b id="cnt-senders">0</b></div>
+    <div class="chip">Receivers <b id="cnt-receivers">0</b></div>
+    <div class="chip">Flows <b id="cnt-flows">0</b></div>
+  </div>
+  <div class="ts" id="ts"></div>
+</div>
+
+<div class="layout">
+  <div class="tree-panel">
+    <div class="tree-search">
+      <input id="search" type="text" placeholder="Filter…" />
+      <button id="toggle-devices-btn" title="Collapse all devices">⊟ Collapse</button>
+    </div>
+    <div class="tree-body" id="tree-body">
+      <div class="detail-empty" style="height:auto;padding:30px 20px">
+        <div class="detail-empty-icon">◎</div>
+        <div class="detail-empty-sub">Enter your NMOS URL and click QUERY</div>
+      </div>
+    </div>
+  </div>
+  <div class="resize-handle" id="resize-handle">
+    <div class="resize-dots">
+      <span></span><span></span><span></span><span></span><span></span>
+    </div>
+  </div>
+  <div class="detail-panel" id="detail-panel">
+    <div class="detail-empty">
+      <div class="detail-empty-icon">◎</div>
+      <div class="detail-empty-title">Nothing selected</div>
+      <div class="detail-empty-sub">Click any node, device, sender,<br>or receiver in the tree to inspect it.</div>
+    </div>
+  </div>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>
