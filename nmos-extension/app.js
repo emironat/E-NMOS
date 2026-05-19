@@ -16,6 +16,125 @@ const S = {
 const ipInput     = document.getElementById('ip-input');
 const btnQuery    = document.getElementById('btn-query');
 const btnAuto     = document.getElementById('btn-auto');
+const btnBookmark = document.getElementById('btn-bookmark');
+const btnBookmarks = document.getElementById('btn-bookmarks');
+const bookmarksPanel = document.getElementById('bookmarks-panel');
+const bookmarksList  = document.getElementById('bookmarks-list');
+document.getElementById('btn-close-bookmarks').addEventListener('click', () => bookmarksPanel.style.display = 'none');
+
+// ── Bookmarks ──
+async function loadBookmarks() {
+  try {
+    const r = await chrome.storage.local.get('enmos_bookmarks');
+    return r.enmos_bookmarks || [];
+  } catch(e) { return []; }
+}
+
+async function saveBookmarks(bms) {
+  try { await chrome.storage.local.set({ enmos_bookmarks: bms }); } catch(e) {}
+}
+
+async function renderBookmarks() {
+  const bms = await loadBookmarks();
+  bookmarksList.innerHTML = '';
+
+  // update star button state
+  const currentUrl = ipInput.value.trim();
+  const isBookmarked = bms.some(b => b.url === currentUrl);
+  btnBookmark.textContent = isBookmarked ? '★' : '☆';
+  btnBookmark.style.color = isBookmarked ? '#c8a020' : 'var(--text2)';
+
+  if (!bms.length) {
+    const empty = document.createElement('div');
+    empty.style.cssText = 'color:var(--text2);font-size:10px;padding:8px 0;';
+    empty.textContent = 'No bookmarks yet — connect to a device and click ☆ in the URL bar';
+    bookmarksList.appendChild(empty);
+    return;
+  }
+
+  bms.forEach((bm, i) => {
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex;align-items:center;gap:10px;padding:8px 10px;background:var(--bg2);border-radius:5px;margin-bottom:6px;border:1px solid var(--border);';
+
+    const icon = document.createElement('span');
+    icon.textContent = '📡';
+    icon.style.fontSize = '12px';
+
+    const info = document.createElement('div');
+    info.style.cssText = 'flex:1;min-width:0;';
+    const name = document.createElement('div');
+    name.style.cssText = 'color:var(--text0);font-size:10px;font-weight:600;margin-bottom:2px;';
+    name.textContent = bm.name;
+    const url = document.createElement('div');
+    url.style.cssText = 'color:var(--text2);font-size:8px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-family:var(--mono);';
+    url.textContent = bm.url;
+    info.appendChild(name);
+    info.appendChild(url);
+
+    const connectBtn = document.createElement('button');
+    connectBtn.className = 'btn btn-ghost';
+    connectBtn.style.cssText = 'font-size:9px;padding:3px 10px;white-space:nowrap;';
+    connectBtn.textContent = '▶ Connect';
+    connectBtn.addEventListener('mouseenter', () => { connectBtn.style.borderColor='var(--blue)'; connectBtn.style.color='var(--blue)'; });
+    connectBtn.addEventListener('mouseleave', () => { connectBtn.style.borderColor=''; connectBtn.style.color=''; });
+    connectBtn.addEventListener('click', e => {
+      e.stopPropagation();
+      ipInput.value = bm.url;
+      bookmarksPanel.style.display = 'none';
+      doQuery();
+    });
+
+    const delBtn = document.createElement('button');
+    delBtn.className = 'btn btn-ghost';
+    delBtn.style.cssText = 'font-size:11px;padding:2px 6px;color:var(--text2);';
+    delBtn.textContent = '✕';
+    delBtn.addEventListener('click', async e => {
+      e.stopPropagation();
+      const bms2 = await loadBookmarks();
+      bms2.splice(i, 1);
+      await saveBookmarks(bms2);
+      renderBookmarks();
+    });
+
+    row.appendChild(icon);
+    row.appendChild(info);
+    row.appendChild(connectBtn);
+    row.appendChild(delBtn);
+    bookmarksList.appendChild(row);
+  });
+}
+
+btnBookmarks.addEventListener('click', () => {
+  if (bookmarksPanel.style.display === 'none') {
+    renderBookmarks();
+    bookmarksPanel.style.display = 'block';
+  } else {
+    bookmarksPanel.style.display = 'none';
+  }
+});
+
+btnBookmark.addEventListener('click', async () => {
+  const url = ipInput.value.trim();
+  if (!url) return;
+  const bms = await loadBookmarks();
+  const existing = bms.findIndex(b => b.url === url);
+  if (existing !== -1) {
+    // already bookmarked — remove it
+    bms.splice(existing, 1);
+    await saveBookmarks(bms);
+    btnBookmark.textContent = '☆';
+    btnBookmark.style.color = 'var(--text2)';
+  } else {
+    // auto-name from node label or hostname
+    const autoName = S.data.nodes[0]
+      ? (S.data.nodes[0].label || S.data.nodes[0].hostname || url)
+      : url;
+    bms.push({ name: autoName, url });
+    await saveBookmarks(bms);
+    btnBookmark.textContent = '★';
+    btnBookmark.style.color = '#c8a020';
+  }
+});
 const treeBody    = document.getElementById('tree-body');
 const detailPanel = document.getElementById('detail-panel');
 const statusPill  = document.getElementById('status-pill');
@@ -225,27 +344,36 @@ async function doQuery() {
     function cmpGrouphint(a, b) {
       const ga = parseGrouphint(a);
       const gb = parseGrouphint(b);
-      // items without grouphint — natural label sort
-      if (!ga && !gb) return (a.label||'').localeCompare(b.label||'', undefined, {numeric:true, sensitivity:'base'});
+
+      // no grouphint — sort by base label (strip format words) then format type
+      if (!ga && !gb) {
+        const fmtOrder = (x) => {
+          const f = (x.format||'').toLowerCase();
+          if (f.includes('video')) return 0;
+          if (f.includes('audio')) return 1;
+          return 2;
+        };
+        const baseLabel = (x) => (x.label||'').replace(/,?\s*(video|audio|anc|ancillary|data)[^,]*/i, '').trim();
+        const baseCmp = baseLabel(a).localeCompare(baseLabel(b), undefined, {numeric:true, sensitivity:'base'});
+        if (baseCmp !== 0) return baseCmp;
+        return fmtOrder(a) - fmtOrder(b);
+      }
       if (!ga) return 1;
       if (!gb) return -1;
-      // compare group tuple element by element: [1,2,3] vs [1,2,4]
-      // use all elements except the last — the last element is the channel index
+
+      // Compare FULL group tuple [1,1,1] — this identifies the device/slot group
       const len = Math.max(ga.nums.length, gb.nums.length);
-      for (let i = 0; i < len - 1; i++) {
+      for (let i = 0; i < len; i++) {
         const d = (ga.nums[i] || 0) - (gb.nums[i] || 0);
         if (d !== 0) return d;
       }
-      // within the same device group — sort by channel index first, then role
-      // so [1,1,1]:vid02 and [1,1,1]:aud01 → aud01 comes first (idx 1 < idx 2)
-      if (ga.idx !== gb.idx) return ga.idx - gb.idx;
-      // same index — sort by role (vid < aud < anc)
-      const roleOrder = { vid:0, video:0, aud:1, audio:1, anc:2, data:2, dd:2 };
+
+      // Same group — sort by role (vid < aud < anc) then by channel index
+      const roleOrder = { vid:0, video:0, aud:1, audio:1, anc:2, data:2, dd:2, mux:3 };
       const ra = roleOrder[ga.role] ?? 9;
       const rb = roleOrder[gb.role] ?? 9;
       if (ra !== rb) return ra - rb;
-      // finally by the last group tuple element
-      return (ga.nums[len-1] || 0) - (gb.nums[len-1] || 0);
+      return ga.idx - gb.idx;
     }
 
     // Store original API order before sorting
@@ -374,9 +502,10 @@ function renderTree() {
         sf.appendChild(span('f-chev' + (sgOpen ? ' open' : ''), '▶'));
         sf.appendChild(mkFolderIcon(true));
         sf.appendChild(txt('span', 'f-lbl', 'Senders'));
-        sf.appendChild(mkSortBtn(sgKey));
-        sf.appendChild(txt('span', 'f-cnt', String(entry.senders.length)));
-        frag.appendChild(sf);
+        sf.appendChild(mkSortBtn(sgKey, entry.senders));
+        sf.appendChild(el('span','f-spc'));
+        sf.appendChild(mkFolderApiBtn('senders'));
+        sf.appendChild(txt('span', 'f-cnt', String(entry.senders.length)));        frag.appendChild(sf);
 
         if (sgOpen) {
           const senderList = S.sortMode[sgKey] === 'api'
@@ -388,7 +517,7 @@ function renderTree() {
             const active = !!(s.subscription && s.subscription.active);
             const selCls = S.sel.type === 'sender' && S.sel.id === s.id ? ' sel-sender' : '';
             const leaf = mkRow('row-leaf' + selCls, s.id, 'sender', 'select', false, false);
-            leaf.appendChild(span('dot ' + (active ? 'dot-s-on' : 'dot-s-off'), ''));
+            leaf.appendChild(span('dot ' + (active ? 'dot-on-'+fmt : 'dot-off-'+fmt), ''));
             const sLbl=txt('span','l-lbl',s.label||shortId(s.id));sLbl.title=s.label||s.id;leaf.appendChild(sLbl);
             const sbadges = document.createElement('div');
             sbadges.className = 'leaf-badges';
@@ -406,7 +535,9 @@ function renderTree() {
         rf.appendChild(span('f-chev' + (rgOpen ? ' open' : ''), '▶'));
         rf.appendChild(mkFolderIcon(false));
         rf.appendChild(txt('span', 'f-lbl', 'Receivers'));
-        rf.appendChild(mkSortBtn(rgKey));
+        rf.appendChild(mkSortBtn(rgKey, entry.receivers));
+        rf.appendChild(el('span','f-spc'));
+        rf.appendChild(mkFolderApiBtn('receivers'));
         rf.appendChild(txt('span', 'f-cnt', String(entry.receivers.length)));
         frag.appendChild(rf);
 
@@ -419,7 +550,7 @@ function renderTree() {
             const active = !!(r.subscription && r.subscription.active);
             const selCls = S.sel.type === 'receiver' && S.sel.id === r.id ? ' sel-receiver' : '';
             const leaf = mkRow('row-leaf' + selCls, r.id, 'receiver', 'select', false, false);
-            leaf.appendChild(span('dot ' + (active ? 'dot-r-on' : 'dot-r-off'), ''));
+            leaf.appendChild(span('dot ' + (active ? 'dot-on-'+fmt : 'dot-off-'+fmt), ''));
             const rLbl=txt('span','l-lbl',r.label||shortId(r.id));rLbl.title=r.label||r.id;leaf.appendChild(rLbl);
             const rbadges = document.createElement('div');
             rbadges.className = 'leaf-badges';
@@ -440,6 +571,9 @@ function renderTree() {
       osf.appendChild(span('f-chev' + (osgOpen ? ' open' : ''), '▶'));
       osf.appendChild(mkFolderIcon(true));
       osf.appendChild(txt('span', 'f-lbl', 'Senders'));
+      osf.appendChild(mkSortBtn(osgKey, orphanS));
+      osf.appendChild(el('span', 'f-spc'));
+      osf.appendChild(mkFolderApiBtn('senders'));
       osf.appendChild(txt('span', 'f-cnt', String(orphanS.length)));
       frag.appendChild(osf);
       if (osgOpen) {
@@ -448,7 +582,7 @@ function renderTree() {
           const active=!!(s.subscription&&s.subscription.active);
           const selCls=S.sel.type==='sender'&&S.sel.id===s.id?' sel-sender':'';
           const leaf=mkRow('row-leaf'+selCls,s.id,'sender','select',false,false);
-          leaf.appendChild(span('dot '+(active?'dot-s-on':'dot-s-off'),''));
+          leaf.appendChild(span('dot '+(active?'dot-on-'+fmt:'dot-off-'+fmt),''));
           const sLbl2=txt('span','l-lbl',s.label||shortId(s.id));sLbl2.title=s.label||s.id;leaf.appendChild(sLbl2);
           const sbadges2=document.createElement('div');sbadges2.className='leaf-badges';
           if(fmt)sbadges2.appendChild(txt('span','rb rb-'+fmt,formatLabel(fmt)));
@@ -466,6 +600,9 @@ function renderTree() {
       orf.appendChild(span('f-chev' + (orgOpen ? ' open' : ''), '▶'));
       orf.appendChild(mkFolderIcon(false));
       orf.appendChild(txt('span', 'f-lbl', 'Receivers'));
+      orf.appendChild(mkSortBtn(orgKey, orphanR));
+      orf.appendChild(el('span', 'f-spc'));
+      orf.appendChild(mkFolderApiBtn('receivers'));
       orf.appendChild(txt('span', 'f-cnt', String(orphanR.length)));
       frag.appendChild(orf);
       if (orgOpen) {
@@ -473,7 +610,7 @@ function renderTree() {
           const fmt=formatType(r.format||''); const active=!!(r.subscription&&r.subscription.active);
           const selCls=S.sel.type==='receiver'&&S.sel.id===r.id?' sel-receiver':'';
           const leaf=mkRow('row-leaf'+selCls,r.id,'receiver','select',false,false);
-          leaf.appendChild(span('dot '+(active?'dot-r-on':'dot-r-off'),''));
+          leaf.appendChild(span('dot '+(active?'dot-on-'+fmt:'dot-off-'+fmt),''));
           const rLbl2=txt('span','l-lbl',r.label||shortId(r.id));rLbl2.title=r.label||r.id;leaf.appendChild(rLbl2);
           const rbadges2=document.createElement('div');rbadges2.className='leaf-badges';
           if(fmt)rbadges2.appendChild(txt('span','rb rb-'+fmt,formatLabel(fmt)));
@@ -545,10 +682,10 @@ function mkRow(cls, id, type, role, open, sel) {
 function mkFolderIcon(isSender) {
   const wrap = document.createElement('span');
   wrap.className = 'f-ico';
-  const color    = isSender ? '#4a9eff' : '#2ec8b8';
-  const dimColor = isSender ? '#162840' : '#0c2825';
+  const color    = '#e06090';
+  const dimColor = '#2e1020';
   const ns = 'http://www.w3.org/2000/svg';
-  const S = 18; // same size as N and D icons
+  const S = 18;
 
   const svg = document.createElementNS(ns, 'svg');
   svg.setAttribute('width', S); svg.setAttribute('height', S);
@@ -612,11 +749,16 @@ async function refreshSelected() {
 
   try {
     // Re-fetch just the relevant endpoint
-    const map = { node:'nodes', device:'devices', sender:'senders', receiver:'receivers', flow:'flows' };
+    const map = { device:'devices', sender:'senders', receiver:'receivers', flow:'flows' };
     const endpoint = map[type];
-    if (!endpoint) return;
 
-    const url = S.apiBase + '/' + endpoint + '/' + id;
+    let url;
+    if (type === 'node') {
+      url = S.apiBase + '/self';
+    } else {
+      if (!endpoint) return;
+      url = S.apiBase + '/' + endpoint + '/' + id;
+    }
     const fresh = await apiFetch(url);
 
     // Update the item in S.data
@@ -646,6 +788,15 @@ function mkRefreshBtn() {
   btn.id = 'detail-refresh-btn';
   btn.textContent = '↻ Refresh';
   btn.addEventListener('click', refreshSelected);
+  return btn;
+}
+
+function mkOpenApiBtn(url) {
+  const btn = document.createElement('button');
+  btn.className = 'dh-refresh';
+  btn.textContent = '↗ Open API';
+  btn.title = url;
+  btn.addEventListener('click', () => window.open(url, '_blank'));
   return btn;
 }
 function renderDetail() {
@@ -732,19 +883,75 @@ function srCard(navKey, dotColor, name, sub, badges) {
   return card;
 }
 
-// Sort toggle button for sender/receiver folders
-function mkSortBtn(key) {
+function decodeGrouphint(tags) {
+  const GROUPHINT = 'urn:x-nmos:tag:grouphint/v1.0';
+  const raw = tags && tags[GROUPHINT] && tags[GROUPHINT][0];
+  if (!raw) return { label: 'Grouphint', value: '—' };
+
+  // Numeric tuple format: [1,1,1]:vid02 — BCP-002-01
+  const m = raw.match(/^\[([^\]]+)\]:([a-z]+)(\d+)$/i);
+  if (m) {
+    const group = m[1];
+    const roleMap = { vid:'Video', video:'Video', aud:'Audio', audio:'Audio', anc:'ANC', data:'ANC', dd:'Data', mux:'Mux' };
+    const role = roleMap[m[2].toLowerCase()] || m[2];
+    const ch = parseInt(m[3], 10);
+    return { label: 'Grouphint (BCP-002-01)', value: `${raw} — Group [${group}] · ${role} channel ${ch}` };
+  }
+
+  // Named string format: "Slot 09 ID 00:Video 01" — BCP-002-02
+  const m2 = raw.match(/^(.+):(.+)$/);
+  if (m2) {
+    return { label: 'Grouphint (BCP-002-02)', value: `${raw} — Group: ${m2[1].trim()} · ${m2[2].trim()}` };
+  }
+
+  return { label: 'Grouphint', value: raw };
+}
+function mkSortBtn(key, items) {
+  const GROUPHINT = 'urn:x-nmos:tag:grouphint/v1.0';
   const btn = document.createElement('span');
   const sorted = S.sortMode[key] !== 'api';
-  btn.textContent = sorted ? '[sorted]' : '[api]';
-  btn.title = sorted ? 'Showing sorted order — click for API order' : 'Showing API order — click for sorted order';
-  btn.style.cssText = `font-family:var(--mono);font-size:8px;font-weight:600;cursor:pointer;flex-shrink:0;color:${sorted ? 'var(--text1)' : 'var(--text3)'};letter-spacing:.02em;padding:0 4px;`;
+  const hasGrouphint = items && items.some(x => x.tags && x.tags[GROUPHINT]);
+
+  let sortLabel = '[sorted: API]';
+  if (sorted) sortLabel = hasGrouphint ? '[sorted: BCP-002-01]' : '[sorted: Label]';
+
+  btn.textContent = sortLabel;
+  btn.title = sorted
+    ? `Sorted by ${hasGrouphint ? 'grouphint tag (BCP-002-01)' : 'label (no grouphint found)'} — click for API order`
+    : 'Showing raw API order — click for sorted order';
+  btn.style.cssText = `font-family:var(--mono);font-size:10px;font-weight:400;cursor:pointer;flex-shrink:0;color:${sorted ? 'var(--text3)' : 'var(--text1)'};margin-left:6px;`;
   btn.addEventListener('click', e => {
     e.stopPropagation();
     S.sortMode[key] = S.sortMode[key] !== 'api' ? 'api' : 'sorted';
     renderTree();
   });
   return btn;
+}
+
+// Small ↗ button on folder rows to open full list URL
+function mkFolderApiBtn(endpoint) {
+  const btn = document.createElement('span');
+  btn.textContent = '↗';
+  btn.title = S.apiBase + '/' + endpoint + '/';
+  btn.style.cssText = 'font-size:9px;cursor:pointer;padding:2px 6px;border-radius:3px;border:1px solid var(--border2);color:var(--text2);background:none;flex-shrink:0;line-height:1.4;transition:border-color .15s,color .15s;';
+  btn.addEventListener('mouseenter', () => { btn.style.borderColor='var(--blue)'; btn.style.color='var(--blue)'; });
+  btn.addEventListener('mouseleave', () => { btn.style.borderColor='var(--border2)'; btn.style.color='var(--text2)'; });
+  btn.addEventListener('click', e => {
+    e.stopPropagation();
+    window.open(S.apiBase + '/' + endpoint + '/', '_blank');
+  });
+  return btn;
+}
+
+// Word badge for detail panel headers — NODE, DEVICE, SENDER, RECEIVER
+function mkDetailBadge(word, color, bgColor, fontSize) {
+  const wrap = document.createElement('span');
+  wrap.style.cssText = `display:inline-flex;align-items:center;justify-content:center;width:56px;height:56px;border-radius:8px;background:${bgColor};border:1.5px solid ${color};flex-shrink:0;`;
+  const t = document.createElement('span');
+  t.style.cssText = `font-family:system-ui,-apple-system,sans-serif;font-size:${fontSize}px;font-weight:900;color:${color};letter-spacing:.5px;line-height:1;text-align:center;`;
+  t.textContent = word;
+  wrap.appendChild(t);
+  return wrap;
 }
 
 // ── NODE DETAIL ──
@@ -758,7 +965,7 @@ function dNode(n) {
   const nr   = S.data.receivers;
 
   const dh = el('div', 'dh');
-  dh.appendChild(mkLetterIcon('N', 44, '#4a9eff', '#162840'));
+  dh.appendChild(mkDetailBadge('NODE', '#ffffff', '#1a1e25', 14));
   const dhInfo = el('div', 'dh-info');
   dhInfo.appendChild(txt('div', 'dh-title', n.label || n.hostname || shortId(n.id)));
   const meta = el('div', 'dh-meta');
@@ -768,7 +975,10 @@ function dNode(n) {
   meta.appendChild(badge('b-receiver', nr.length + ' receivers'));
   if (clocks.some(c => c.ref_type === 'ptp' && c.traceable)) meta.appendChild(badge('b-ptp', 'PTP'));
   dhInfo.appendChild(meta);
+  const urlEl = txt('div', 'dh-url', S.apiBase + '/self');
+  dhInfo.appendChild(urlEl);
   dh.appendChild(dhInfo);
+  dh.appendChild(mkOpenApiBtn(S.apiBase + '/self'));
   dh.appendChild(mkRefreshBtn());
   detailPanel.appendChild(dh);
 
@@ -804,7 +1014,7 @@ function dNode(n) {
     devs.forEach(d => {
       const ns2 = S.data.senders.filter(s => s.device_id === d.id).length;
       const nr2 = S.data.receivers.filter(r => r.device_id === d.id).length;
-      grid.appendChild(srCard('device:'+d.id, 'var(--purple)', d.label || shortId(d.id), ns2 + ' senders · ' + nr2 + ' receivers', [badge('b-device','device')]));
+      grid.appendChild(srCard('device:'+d.id, 'var(--text1)', d.label || shortId(d.id), ns2 + ' senders · ' + nr2 + ' receivers', [badge('b-device','device')]));
     });
     db.appendChild(section('Devices', devs.length, grid));
   }
@@ -820,7 +1030,7 @@ function dNode(n) {
       card.appendChild(info);
       const a = document.createElement('a');
       a.href = (ep.protocol||'http')+'://'+ep.host+':'+ep.port+'/x-nmos/node/';
-      a.target = '_blank'; a.textContent = 'open ↗'; a.style.color = 'var(--blue)'; a.style.fontSize = '11px';
+      a.target = '_blank'; a.textContent = 'open ↗'; a.style.color = 'var(--text1)'; a.style.fontSize = '11px';
       card.appendChild(a);
       grid.appendChild(card);
     });
@@ -838,20 +1048,23 @@ function dDevice(d) {
   const node = S.data.nodes.find(n => n.id === d.node_id) || (S.data.nodes.length === 1 ? S.data.nodes[0] : null);
 
   const dh = el('div', 'dh');
-  dh.appendChild(mkLetterIcon('D', 44, '#9b72f0', '#1e1038'));
+  dh.appendChild(mkDetailBadge('DEVICE', '#ffffff', '#1a1e25', 11));
   const dhInfo = el('div', 'dh-info');
   dhInfo.appendChild(txt('div', 'dh-title', d.label || shortId(d.id)));
   const meta = el('div', 'dh-meta');
-  if (node) meta.appendChild(navLink('node', node.id, node.label || node.hostname || shortId(node.id), 'var(--blue)'));
+  if (node) meta.appendChild(navLink('node', node.id, node.label || node.hostname || shortId(node.id), 'var(--text1)'));
   meta.appendChild(badge('b-sender', ds.length + ' senders'));
   meta.appendChild(badge('b-receiver', dr.length + ' receivers'));
   dhInfo.appendChild(meta);
+  const urlEl = txt('div', 'dh-url', S.apiBase + '/devices/' + d.id);
+  dhInfo.appendChild(urlEl);
   dh.appendChild(dhInfo);
+  dh.appendChild(mkOpenApiBtn(S.apiBase + '/devices/' + d.id));
   dh.appendChild(mkRefreshBtn());
   detailPanel.appendChild(dh);
 
   const db = el('div', 'db');
-  const nodeClickEl = node ? (() => { const s = txt('span', 'clickable', node.label || node.hostname || d.node_id); s.dataset.nav = 'node:' + node.id; s.style.color = 'var(--blue)'; return s; })() : (d.node_id || '—');
+  const nodeClickEl = node ? (() => { const s = txt('span', 'clickable', node.label || node.hostname || d.node_id); s.dataset.nav = 'node:' + node.id; s.style.color = 'var(--text1)'; return s; })() : (d.node_id || '—');
   db.appendChild(section('Device info', null, kvTable([
     ['ID', d.id || '—'], ['Label', d.label || '—'], ['Description', d.description || '—'],
     ['Type', d.type || '—'], ['Node', nodeClickEl], ['Version', d.version || '—'],
@@ -863,7 +1076,7 @@ function dDevice(d) {
       const flow = S.data.flows.find(f => f.id === s.flow_id);
       const fmt  = flow ? formatType(flow.format) : '';
       const active = !!(s.subscription && s.subscription.active);
-      grid.appendChild(srCard('sender:'+s.id, active?'var(--blue)':'var(--text2)', s.label||shortId(s.id), (active?'ACTIVE':'IDLE')+(fmt?' · '+fmt.toUpperCase():''), [fmt?badge('b-'+fmt,fmt):null, badge(active?'b-active':'b-inactive',active?'▶':'—')]));
+      grid.appendChild(srCard('sender:'+s.id, active?'var(--text1)':'var(--text2)', s.label||shortId(s.id), (active?'ACTIVE':'IDLE')+(fmt?' · '+fmt.toUpperCase():''), [fmt?badge('b-'+fmt,fmt):null, badge(active?'b-active':'b-inactive',active?'▶':'—')]));
     });
     db.appendChild(section('Senders', ds.length, grid));
   }
@@ -893,16 +1106,19 @@ function dSender(s) {
   const dev    = S.data.devices.find(d => d.id === s.device_id);
 
   const dh = el('div', 'dh');
-  dh.appendChild(mkLetterIcon('S', 44, '#4a9eff', '#162840'));
+  dh.appendChild(mkDetailBadge('SENDER', '#ffffff', '#1a1e25', 11));
   const dhInfo = el('div', 'dh-info');
   dhInfo.appendChild(txt('div', 'dh-title', s.label || shortId(s.id)));
   const meta = el('div', 'dh-meta');
   meta.appendChild(badge(active ? 'b-active' : 'b-inactive', active ? 'ACTIVE' : 'IDLE'));
   if (fmt) meta.appendChild(badge('b-' + fmt, fmt));
-  if (node) meta.appendChild(navLink('node', node.id, node.label||node.hostname||shortId(node.id), 'var(--blue)'));
-  if (dev)  meta.appendChild(navLink('device', dev.id, dev.label||shortId(dev.id), 'var(--purple)'));
+  if (node) meta.appendChild(navLink('node', node.id, node.label||node.hostname||shortId(node.id), 'var(--text1)'));
+  if (dev)  meta.appendChild(navLink('device', dev.id, dev.label||shortId(dev.id), 'var(--text1)'));
   dhInfo.appendChild(meta);
+  const urlEl = txt('div', 'dh-url', S.apiBase + '/senders/' + s.id);
+  dhInfo.appendChild(urlEl);
   dh.appendChild(dhInfo);
+  dh.appendChild(mkOpenApiBtn(S.apiBase + '/senders/' + s.id));
   dh.appendChild(mkRefreshBtn());
   detailPanel.appendChild(dh);
 
@@ -924,13 +1140,15 @@ function dSender(s) {
   db.appendChild(section('Subscription', null, subBox(active?'→':'⊝', 'Routed to receiver', rxValEl, badge(active?'b-active':'b-inactive', active?'ACTIVE':'INACTIVE'))));
 
   // Sender info
-  const nodeEl = node ? (() => { const v = txt('span', 'clickable', node.label||node.hostname||s.node_id); v.dataset.nav = 'node:' + node.id; v.style.color = 'var(--blue)'; return v; })() : (s.node_id||'—');
-  const devEl  = dev  ? (() => { const v = txt('span', 'clickable', dev.label||s.device_id); v.dataset.nav = 'device:' + dev.id; v.style.color = 'var(--purple)'; return v; })() : (s.device_id||'—');
+  const nodeEl = node ? (() => { const v = txt('span', 'clickable', node.label||node.hostname||s.node_id); v.dataset.nav = 'node:' + node.id; v.style.color = 'var(--text1)'; return v; })() : (s.node_id||'—');
+  const devEl  = dev  ? (() => { const v = txt('span', 'clickable', dev.label||s.device_id); v.dataset.nav = 'device:' + dev.id; v.style.color = 'var(--text1)'; return v; })() : (s.device_id||'—');
   const mfEl   = s.manifest_href ? (() => { const a = document.createElement('a'); a.href = s.manifest_href; a.target = '_blank'; a.textContent = s.manifest_href; return a; })() : '—';
   db.appendChild(section('Sender info', null, kvTable([
     ['ID', s.id], ['Label', s.label||'—'], ['Description', s.description||'—'],
     ['Node', nodeEl], ['Device', devEl], ['Transport', s.transport||'—'],
-    ['Interfaces', (s.interface_bindings||[]).join(', ')||'—'], ['Manifest', mfEl], ['Version', s.version||'—'],
+    ['Interfaces', (s.interface_bindings||[]).join(', ')||'—'], ['Manifest', mfEl],
+    (() => { const gh = decodeGrouphint(s.tags); return [gh.label, gh.value]; })(),
+    ['Version', s.version||'—'],
   ])));
 
   // SDP fetch section
@@ -939,7 +1157,7 @@ function dSender(s) {
     const sdpBtn = document.createElement('button');
     sdpBtn.textContent = '⬇ Fetch SDP';
     sdpBtn.style.cssText = 'background:none;border:1px solid var(--border2);border-radius:5px;color:var(--text2);cursor:pointer;font-family:var(--mono);font-size:10px;padding:4px 10px;margin:8px 0;transition:border-color .15s,color .15s;';
-    sdpBtn.onmouseover = () => { sdpBtn.style.borderColor='var(--blue)'; sdpBtn.style.color='var(--blue)'; };
+    sdpBtn.onmouseover = () => { sdpBtn.style.borderColor='var(--text1)'; sdpBtn.style.color='var(--text1)'; };
     sdpBtn.onmouseout  = () => { sdpBtn.style.borderColor='var(--border2)'; sdpBtn.style.color='var(--text2)'; };
     const sdpBox = document.createElement('pre');
     sdpBox.style.cssText = 'display:none;background:var(--bg2);border:1px solid var(--border);border-radius:5px;padding:10px;font-size:10px;color:var(--green);overflow-x:auto;white-space:pre;line-height:1.5;margin:0;';
@@ -992,16 +1210,19 @@ function dReceiver(r) {
   const dev    = S.data.devices.find(d => d.id === r.device_id);
 
   const dh = el('div', 'dh');
-  dh.appendChild(mkLetterIcon('R', 44, '#2ec8b8', '#0c2825'));
+  dh.appendChild(mkDetailBadge('RECEIVER', '#ffffff', '#1a1e25', 9));
   const dhInfo = el('div', 'dh-info');
   dhInfo.appendChild(txt('div', 'dh-title', r.label || shortId(r.id)));
   const meta = el('div', 'dh-meta');
   meta.appendChild(badge(active ? 'b-active' : 'b-inactive', active ? 'ROUTED' : 'UNROUTED'));
   if (fmt) meta.appendChild(badge('b-' + fmt, fmt));
-  if (node) meta.appendChild(navLink('node', node.id, node.label||node.hostname||shortId(node.id), 'var(--blue)'));
-  if (dev)  meta.appendChild(navLink('device', dev.id, dev.label||shortId(dev.id), 'var(--purple)'));
+  if (node) meta.appendChild(navLink('node', node.id, node.label||node.hostname||shortId(node.id), 'var(--text1)'));
+  if (dev)  meta.appendChild(navLink('device', dev.id, dev.label||shortId(dev.id), 'var(--text1)'));
   dhInfo.appendChild(meta);
+  const urlEl = txt('div', 'dh-url', S.apiBase + '/receivers/' + r.id);
+  dhInfo.appendChild(urlEl);
   dh.appendChild(dhInfo);
+  dh.appendChild(mkOpenApiBtn(S.apiBase + '/receivers/' + r.id));
   dh.appendChild(mkRefreshBtn());
   detailPanel.appendChild(dh);
 
@@ -1196,8 +1417,8 @@ function dReceiver(r) {
   connWrap.appendChild(connBtn);
   connWrap.appendChild(connBox);
   db.appendChild(section('IS-05 Connection', null, connWrap));
-  const nodeEl = node ? (() => { const v = txt('span', 'clickable', node.label||node.hostname||r.node_id||'—'); v.dataset.nav = 'node:' + node.id; v.style.color = 'var(--blue)'; return v; })() : (r.node_id||'—');
-  const devEl  = dev  ? (() => { const v = txt('span', 'clickable', dev.label||r.device_id); v.dataset.nav = 'device:' + dev.id; v.style.color = 'var(--purple)'; return v; })() : (r.device_id||'—');
+  const nodeEl = node ? (() => { const v = txt('span', 'clickable', node.label||node.hostname||r.node_id||'—'); v.dataset.nav = 'node:' + node.id; v.style.color = 'var(--text1)'; return v; })() : (r.node_id||'—');
+  const devEl  = dev  ? (() => { const v = txt('span', 'clickable', dev.label||r.device_id); v.dataset.nav = 'device:' + dev.id; v.style.color = 'var(--text1)'; return v; })() : (r.device_id||'—');
   db.appendChild(section('Receiver info', null, kvTable([
     ['ID', r.id], ['Label', r.label||'—'], ['Description', r.description||'—'],
     ['Node', nodeEl], ['Device', devEl],
@@ -1205,13 +1426,14 @@ function dReceiver(r) {
     ['Transport', r.transport||'—'],
     ['Interfaces', (r.interface_bindings||[]).join(', ')||'—'],
     ['Caps', r.caps&&r.caps.media_types ? r.caps.media_types.join(', ') : '—'],
+    (() => { const gh = decodeGrouphint(r.tags); return [gh.label, gh.value]; })(),
     ['Version', r.version||'—'],
   ])));
 
   // If routed, show sender details inline
   if (tx) {
     const mfEl = tx.manifest_href ? (() => { const a = document.createElement('a'); a.href = tx.manifest_href; a.target = '_blank'; a.textContent = tx.manifest_href; return a; })() : '—';
-    const txIdEl = (() => { const v = txt('span', 'clickable', txId); v.dataset.nav = 'sender:' + txId; v.style.color = 'var(--blue)'; return v; })();
+    const txIdEl = (() => { const v = txt('span', 'clickable', txId); v.dataset.nav = 'sender:' + txId; v.style.color = 'var(--text1)'; return v; })();
     db.appendChild(section('Routed sender', null, kvTable([
       ['Sender ID', txIdEl], ['Label', tx.label||'—'],
       ['Transport', tx.transport||'—'],
@@ -1263,11 +1485,14 @@ function mkDirBadge(isSender, active, fmt) {
       el.appendChild(s);
     });
   } else {
-    const s = document.createElement('span');
-    s.textContent = isSender ? '›' : '‹';
-    s.style.color   = c.fg;
-    s.style.opacity = '0.3';
-    el.appendChild(s);
+    const chevs = isSender ? ['›','›','›'] : ['‹','‹','‹'];
+    chevs.forEach(ch => {
+      const s = document.createElement('span');
+      s.textContent = ch;
+      s.style.color = c.fg;
+      s.style.opacity = '0.25';
+      el.appendChild(s);
+    });
   }
   return el;
 }
