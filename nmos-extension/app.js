@@ -23,6 +23,15 @@ const bookmarksPanel = document.getElementById('bookmarks-panel');
 const bookmarksList  = document.getElementById('bookmarks-list');
 document.getElementById('btn-close-bookmarks').addEventListener('click', () => bookmarksPanel.style.display = 'none');
 
+// Close bookmarks panel when clicking outside it
+document.addEventListener('click', e => {
+  if (bookmarksPanel.style.display !== 'none' &&
+      !bookmarksPanel.contains(e.target) &&
+      e.target !== btnBookmarks) {
+    bookmarksPanel.style.display = 'none';
+  }
+});
+
 // ── Bookmarks ──
 async function loadBookmarks() {
   try {
