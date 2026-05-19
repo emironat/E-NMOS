@@ -10,6 +10,7 @@ const S = {
   lastFetch: null,
   apiBase: '',
   sortMode: {}, // keyed by 'sg:{devId}' or 'rg:{devId}' → 'sorted' | 'api'
+  jsonKeys: false, // toggle between friendly labels and raw JSON keys
 };
 
 // ── DOM refs ──
@@ -81,6 +82,9 @@ async function renderBookmarks() {
       e.stopPropagation();
       ipInput.value = bm.url;
       bookmarksPanel.style.display = 'none';
+      // clear tree and detail so user knows something is happening
+      treeBody.innerHTML = '<div style="color:var(--text1);font-size:13px;padding:40px 20px;text-align:center;line-height:2;">⏳<br><span style="font-size:11px;color:var(--text2);">Connecting to ' + bm.name + '…</span></div>';
+      detailPanel.innerHTML = '<div style="color:var(--text1);font-size:13px;padding:80px 20px;text-align:center;line-height:2;">⏳<br><span style="font-size:11px;color:var(--text2);">Connecting…</span></div>';
       doQuery();
     });
 
@@ -222,7 +226,7 @@ btnAuto.addEventListener('click', () => {
     clearInterval(S.autoTimer); S.autoTimer = null;
     btnAuto.classList.remove('on'); btnAuto.textContent = '⟳ AUTO';
   } else {
-    doQuery(); S.autoTimer = setInterval(doQuery, 10000);
+    doQuery(true); S.autoTimer = setInterval(() => doQuery(true), 10000);
     btnAuto.classList.add('on'); btnAuto.textContent = '⟳ 10s';
   }
 });
@@ -275,13 +279,20 @@ async function safe(url) {
 }
 
 // ── Main query ──
-async function doQuery() {
+async function doQuery(silent = false) {
   const raw = ipInput.value.trim();
   if (!raw) { ipInput.focus(); return; }
   const base = raw.replace(/\/+$/, '');
   try { chrome.storage.local.set({ lastUrl: raw }); } catch(e) {}
   setStatus('loading', 'QUERYING…');
   btnQuery.disabled = true;
+
+  // Only clear UI on manual connects — not on auto-refresh
+  if (!silent) {
+    S.data = { nodes:[], devices:[], senders:[], receivers:[], flows:[] };
+    treeBody.innerHTML = '<div style="color:var(--text1);font-size:13px;padding:40px 20px;text-align:center;line-height:2;">⏳<br><span style="font-size:11px;color:var(--text2);">Connecting…</span></div>';
+    detailPanel.innerHTML = '<div style="color:var(--text1);font-size:13px;padding:80px 20px;text-align:center;line-height:2;">⏳<br><span style="font-size:11px;color:var(--text2);">Connecting…</span></div>';
+  }
 
   try {
     // Auto-discover the versioned API base
@@ -395,12 +406,8 @@ async function doQuery() {
     updateChips(); renderTree(); renderDetail();
   } catch(err) {
     setStatus('error', 'ERROR'); chipsEl.style.display = 'none';
-    detailPanel.innerHTML = '';
-    const box = el('div', 'err-box');
-    box.appendChild(txt('div', 'err-title', 'Failed to connect'));
-    box.appendChild(txt('div', '', raw));
-    box.appendChild(txt('div', '', err.message));
-    detailPanel.appendChild(box);
+    treeBody.innerHTML = '<div style="color:var(--amber);font-size:13px;padding:40px 20px;text-align:center;line-height:2;">⚠<br><span style="font-size:11px;color:var(--amber);">Could not connect</span><br><span style="color:var(--text2);font-size:9px;">' + (err.message||'Check the URL and try again') + '</span></div>';
+    detailPanel.innerHTML = '<div style="color:var(--amber);font-size:13px;padding:80px 20px;text-align:center;line-height:2;">⚠<br><span style="font-size:11px;">Could not connect</span><br><span style="color:var(--text2);font-size:9px;">' + (err.message||'Check the URL and try again') + '</span></div>';
   } finally { btnQuery.disabled = false; }
 }
 
@@ -521,7 +528,7 @@ function renderTree() {
             const sLbl=txt('span','l-lbl',s.label||shortId(s.id));sLbl.title=s.label||s.id;leaf.appendChild(sLbl);
             const sbadges = document.createElement('div');
             sbadges.className = 'leaf-badges';
-            if (fmt) sbadges.appendChild(txt('span', 'rb rb-' + fmt, formatLabel(fmt)));
+            if (fmt) { const rb = txt('span', 'rb rb-' + fmt, formatLabel(fmt)); if (!active) rb.style.opacity='0.4'; sbadges.appendChild(rb); }
             sbadges.appendChild(mkDirBadge(true, active, fmt));
             leaf.appendChild(sbadges);
             frag.appendChild(leaf);
@@ -554,7 +561,7 @@ function renderTree() {
             const rLbl=txt('span','l-lbl',r.label||shortId(r.id));rLbl.title=r.label||r.id;leaf.appendChild(rLbl);
             const rbadges = document.createElement('div');
             rbadges.className = 'leaf-badges';
-            if (fmt) rbadges.appendChild(txt('span', 'rb rb-' + fmt, formatLabel(fmt)));
+            if (fmt) { const rb = txt('span', 'rb rb-' + fmt, formatLabel(fmt)); if (!active) rb.style.opacity='0.4'; rbadges.appendChild(rb); }
             rbadges.appendChild(mkDirBadge(false, active, fmt));
             leaf.appendChild(rbadges);
             frag.appendChild(leaf);
@@ -585,7 +592,7 @@ function renderTree() {
           leaf.appendChild(span('dot '+(active?'dot-on-'+fmt:'dot-off-'+fmt),''));
           const sLbl2=txt('span','l-lbl',s.label||shortId(s.id));sLbl2.title=s.label||s.id;leaf.appendChild(sLbl2);
           const sbadges2=document.createElement('div');sbadges2.className='leaf-badges';
-          if(fmt)sbadges2.appendChild(txt('span','rb rb-'+fmt,formatLabel(fmt)));
+          if(fmt){const rb2=txt('span','rb rb-'+fmt,formatLabel(fmt));if(!active)rb2.style.opacity='0.25';sbadges2.appendChild(rb2);}
           sbadges2.appendChild(mkDirBadge(true,active,fmt));leaf.appendChild(sbadges2);
           frag.appendChild(leaf);
         });
@@ -613,7 +620,7 @@ function renderTree() {
           leaf.appendChild(span('dot '+(active?'dot-on-'+fmt:'dot-off-'+fmt),''));
           const rLbl2=txt('span','l-lbl',r.label||shortId(r.id));rLbl2.title=r.label||r.id;leaf.appendChild(rLbl2);
           const rbadges2=document.createElement('div');rbadges2.className='leaf-badges';
-          if(fmt)rbadges2.appendChild(txt('span','rb rb-'+fmt,formatLabel(fmt)));
+          if(fmt){const rb3=txt('span','rb rb-'+fmt,formatLabel(fmt));if(!active)rb3.style.opacity='0.25';rbadges2.appendChild(rb3);}
           rbadges2.appendChild(mkDirBadge(false,active,fmt));leaf.appendChild(rbadges2);
           frag.appendChild(leaf);
         });
@@ -762,12 +769,16 @@ async function refreshSelected() {
     const fresh = await apiFetch(url);
 
     // Update the item in S.data
-    const arr = S.data[endpoint] || S.data[endpoint + 's'];
-    const key = Object.keys(S.data).find(k => S.data[k] && Array.isArray(S.data[k]) &&
-      S.data[k].some && S.data[k].some(x => x && x.id === id));
-    if (key) {
-      const idx = S.data[key].findIndex(x => x.id === id);
-      if (idx !== -1) S.data[key][idx] = fresh;
+    if (type === 'node') {
+      const idx = S.data.nodes.findIndex(n => n.id === id);
+      if (idx !== -1) S.data.nodes[idx] = fresh;
+    } else {
+      const key = Object.keys(S.data).find(k => S.data[k] && Array.isArray(S.data[k]) &&
+        S.data[k].some && S.data[k].some(x => x && x.id === id));
+      if (key) {
+        const idx = S.data[key].findIndex(x => x.id === id);
+        if (idx !== -1) S.data[key][idx] = fresh;
+      }
     }
 
     // Re-render detail and tree dot for this item
@@ -839,17 +850,77 @@ function kvRow(key, valueEl) {
   return tr;
 }
 
+// JSON key mappings for sender and receiver fields
+const FIELD_KEYS = {
+  'ID':'id', 'Label':'label', 'Description':'description', 'Node':'node_id',
+  'Device':'device_id', 'Flow':'flow_id', 'Transport':'transport',
+  'Interfaces':'interface_bindings', 'Manifest':'manifest_href',
+  'Version':'version', 'Caps':'caps', 'Format':'format',
+  'Media type':'media_type', 'Resolution':'frame_width',
+  'Frame rate':'grain_rate', 'Colorspace':'colorspace',
+  'Transfer':'transfer_characteristic', 'Bit depth':'bit_depth',
+  'Sample rate':'sample_rate', 'Channels':'channels',
+};
+
+function mkJsonToggle() {
+  const btn = document.createElement('span');
+  const active = S.jsonKeys;
+  btn.style.cssText = `font-size:8px;cursor:pointer;padding:2px 7px;border-radius:3px;border:1px solid ${active ? 'var(--blue)' : 'var(--border2)'};color:${active ? 'var(--blue)' : 'var(--text2)'};background:${active ? 'var(--blue-dim)' : 'none'};margin-left:8px;font-family:var(--mono);flex-shrink:0;transition:border-color .15s,color .15s;`;
+  btn.textContent = 'JSON keys';
+  btn.title = active ? 'Showing raw JSON keys — click for friendly labels' : 'Showing friendly labels — click for JSON keys';
+  if (!active) {
+    btn.addEventListener('mouseenter', () => { btn.style.borderColor='var(--blue)'; btn.style.color='var(--blue)'; });
+    btn.addEventListener('mouseleave', () => { btn.style.borderColor='var(--border2)'; btn.style.color='var(--text2)'; });
+  }
+  btn.addEventListener('click', e => {
+    e.stopPropagation();
+    S.jsonKeys = !S.jsonKeys;
+    renderDetail();
+  });
+  return btn;
+}
+
 function kvTable(rows) {
   const table = el('table', 'kv');
-  rows.forEach(([k, v]) => table.appendChild(kvRow(k, v)));
+  rows.forEach(([k, v]) => {
+    const displayKey = (S.jsonKeys && FIELD_KEYS[k]) ? FIELD_KEYS[k] : k;
+    const tr = document.createElement('tr');
+    const th = txt('td', 'kk', displayKey);
+    if (S.jsonKeys && FIELD_KEYS[k]) {
+      th.style.color = 'var(--blue)';
+      th.style.fontFamily = 'var(--mono)';
+    }
+    tr.appendChild(th);
+    const td = document.createElement('td');
+    td.className = 'kv-v';
+    if (typeof v === 'string') td.textContent = v;
+    else if (v) td.appendChild(v);
+    tr.appendChild(td);
+    table.appendChild(tr);
+  });
   return table;
 }
 
 function section(title, count, ...children) {
   const sec = el('div', 'section');
   const sh  = el('div', 'sh');
-  sh.appendChild(document.createTextNode(title));
+  const titleNode = document.createElement('span');
+  titleNode.textContent = title;
+  sh.appendChild(titleNode);
   if (count !== null) sh.appendChild(txt('span', 'sh-count', String(count)));
+  sec.appendChild(sh);
+  children.forEach(c => sec.appendChild(c));
+  return sec;
+}
+
+function sectionWithToggle(title, count, toggleBtn, ...children) {
+  const sec = el('div', 'section');
+  const sh  = el('div', 'sh');
+  const titleNode = document.createElement('span');
+  titleNode.textContent = title;
+  sh.appendChild(titleNode);
+  if (count !== null) sh.appendChild(txt('span', 'sh-count', String(count)));
+  sh.appendChild(toggleBtn);
   sec.appendChild(sh);
   children.forEach(c => sec.appendChild(c));
   return sec;
@@ -1136,52 +1207,27 @@ function dSender(s) {
         wrap.appendChild(idLine);
         return wrap;
       })()
-    : txt('div', 'sub-none', 'not routed');
+    : (() => {
+        const wrap = el('div', '');
+        wrap.appendChild(txt('div', 'sub-none', 'No receiver registered via IS-05'));
+        const hint = txt('div', '', active ? 'Stream is active — receiver may be routed outside NMOS' : 'Stream is inactive');
+        hint.style.cssText = 'font-size:9px;color:var(--text2);margin-top:3px;font-family:var(--mono);';
+        wrap.appendChild(hint);
+        return wrap;
+      })();
   db.appendChild(section('Subscription', null, subBox(active?'→':'⊝', 'Routed to receiver', rxValEl, badge(active?'b-active':'b-inactive', active?'ACTIVE':'INACTIVE'))));
 
   // Sender info
   const nodeEl = node ? (() => { const v = txt('span', 'clickable', node.label||node.hostname||s.node_id); v.dataset.nav = 'node:' + node.id; v.style.color = 'var(--text1)'; return v; })() : (s.node_id||'—');
   const devEl  = dev  ? (() => { const v = txt('span', 'clickable', dev.label||s.device_id); v.dataset.nav = 'device:' + dev.id; v.style.color = 'var(--text1)'; return v; })() : (s.device_id||'—');
   const mfEl   = s.manifest_href ? (() => { const a = document.createElement('a'); a.href = s.manifest_href; a.target = '_blank'; a.textContent = s.manifest_href; return a; })() : '—';
-  db.appendChild(section('Sender info', null, kvTable([
+  db.appendChild(sectionWithToggle('Sender info', null, mkJsonToggle(), kvTable([
     ['ID', s.id], ['Label', s.label||'—'], ['Description', s.description||'—'],
     ['Node', nodeEl], ['Device', devEl], ['Transport', s.transport||'—'],
     ['Interfaces', (s.interface_bindings||[]).join(', ')||'—'], ['Manifest', mfEl],
     (() => { const gh = decodeGrouphint(s.tags); return [gh.label, gh.value]; })(),
     ['Version', s.version||'—'],
   ])));
-
-  // SDP fetch section
-  if (s.manifest_href) {
-    const sdpWrap = el('div', '');
-    const sdpBtn = document.createElement('button');
-    sdpBtn.textContent = '⬇ Fetch SDP';
-    sdpBtn.style.cssText = 'background:none;border:1px solid var(--border2);border-radius:5px;color:var(--text2);cursor:pointer;font-family:var(--mono);font-size:10px;padding:4px 10px;margin:8px 0;transition:border-color .15s,color .15s;';
-    sdpBtn.onmouseover = () => { sdpBtn.style.borderColor='var(--text1)'; sdpBtn.style.color='var(--text1)'; };
-    sdpBtn.onmouseout  = () => { sdpBtn.style.borderColor='var(--border2)'; sdpBtn.style.color='var(--text2)'; };
-    const sdpBox = document.createElement('pre');
-    sdpBox.style.cssText = 'display:none;background:var(--bg2);border:1px solid var(--border);border-radius:5px;padding:10px;font-size:10px;color:var(--green);overflow-x:auto;white-space:pre;line-height:1.5;margin:0;';
-    sdpBtn.addEventListener('click', async () => {
-      if (sdpBox.style.display !== 'none') { sdpBox.style.display='none'; sdpBtn.textContent='⬇ Fetch SDP'; return; }
-      sdpBtn.textContent = '⏳ Fetching…';
-      try {
-        const res = await fetch(s.manifest_href);
-        if (!res.ok) throw new Error('HTTP ' + res.status);
-        const text = await res.text();
-        sdpBox.textContent = text;
-        sdpBox.style.display = 'block';
-        sdpBtn.textContent = '✕ Hide SDP';
-      } catch(e) {
-        sdpBox.textContent = 'Error: ' + e.message;
-        sdpBox.style.color = 'var(--amber)';
-        sdpBox.style.display = 'block';
-        sdpBtn.textContent = '✕ Hide SDP';
-      }
-    });
-    sdpWrap.appendChild(sdpBtn);
-    sdpWrap.appendChild(sdpBox);
-    db.appendChild(section('SDP', null, sdpWrap));
-  }
 
   // Flow
   if (flow) {
@@ -1194,6 +1240,45 @@ function dSender(s) {
     if (flow.sample_rate)  rows.push(['Sample rate', String(flow.sample_rate.numerator)]);
     if (flow.channels)     rows.push(['Channels', String(flow.channels.length)]);
     db.appendChild(section('Flow', null, kvTable(rows)));
+  }
+
+  // SDP fetch section
+  if (s.manifest_href) {
+    const sdpWrap = el('div', '');
+    const sdpBtn = document.createElement('button');
+    sdpBtn.textContent = '⬇ Fetch SDP';
+    sdpBtn.style.cssText = 'background:var(--teal-dim);border:1px solid var(--teal);border-radius:5px;color:var(--teal);cursor:pointer;font-family:var(--mono);font-size:10px;font-weight:700;padding:5px 12px;margin:8px 0;transition:background .15s,color .15s;display:inline-block;';
+    sdpBtn.onmouseover = () => { sdpBtn.style.background='var(--teal)'; sdpBtn.style.color='#000'; };
+    sdpBtn.onmouseout  = () => { sdpBtn.style.background='var(--teal-dim)'; sdpBtn.style.color='var(--teal)'; };
+    const sdpBox = document.createElement('pre');
+    sdpBox.style.cssText = 'display:none;background:var(--bg2);border:1px solid var(--border);border-radius:5px;padding:10px;font-size:10px;color:var(--green);overflow-x:auto;white-space:pre;line-height:1.5;margin:0;';
+    sdpBtn.addEventListener('click', async () => {
+      if (sdpBox.style.display !== 'none') {
+        sdpBox.style.display='none';
+        sdpBtn.textContent='⬇ Fetch SDP';
+        sdpBtn.style.background='var(--teal-dim)'; sdpBtn.style.color='var(--teal)';
+        return;
+      }
+      sdpBtn.textContent = '⏳ Fetching…';
+      try {
+        const res = await fetch(s.manifest_href);
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const text = await res.text();
+        sdpBox.textContent = text;
+        sdpBox.style.display = 'block';
+        sdpBtn.textContent = '▲ Hide SDP';
+        sdpBtn.style.background='var(--teal)'; sdpBtn.style.color='#000';
+      } catch(e) {
+        sdpBox.textContent = 'Error: ' + e.message;
+        sdpBox.style.color = 'var(--amber)';
+        sdpBox.style.display = 'block';
+        sdpBtn.textContent = '▲ Hide SDP';
+        sdpBtn.style.background='var(--teal)'; sdpBtn.style.color='#000';
+      }
+    });
+    sdpWrap.appendChild(sdpBtn);
+    sdpWrap.appendChild(sdpBox);
+    db.appendChild(section('SDP', null, sdpWrap));
   }
 
   detailPanel.appendChild(db);
@@ -1278,7 +1363,12 @@ function dReceiver(r) {
           wrap.appendChild(hint);
           return wrap;
         }
-        return txt('div', 'sub-none', 'no sender routed');
+        const wrap2 = el('div', '');
+        wrap2.appendChild(txt('div', 'sub-none', 'No sender registered via IS-05'));
+        const hint2 = txt('div', '', active ? 'Stream is active — sender may be routed outside NMOS' : 'Stream is inactive');
+        hint2.style.cssText = 'font-size:9px;color:var(--text2);margin-top:3px;font-family:var(--mono);';
+        wrap2.appendChild(hint2);
+        return wrap2;
       })();
   db.appendChild(section('Subscription', null, subBox(active?'←':'⊝', 'Receiving from sender', txValEl, badge(active?'b-active':'b-inactive', active?'ACTIVE':'INACTIVE'))));
 
@@ -1416,10 +1506,9 @@ function dReceiver(r) {
 
   connWrap.appendChild(connBtn);
   connWrap.appendChild(connBox);
-  db.appendChild(section('IS-05 Connection', null, connWrap));
   const nodeEl = node ? (() => { const v = txt('span', 'clickable', node.label||node.hostname||r.node_id||'—'); v.dataset.nav = 'node:' + node.id; v.style.color = 'var(--text1)'; return v; })() : (r.node_id||'—');
   const devEl  = dev  ? (() => { const v = txt('span', 'clickable', dev.label||r.device_id); v.dataset.nav = 'device:' + dev.id; v.style.color = 'var(--text1)'; return v; })() : (r.device_id||'—');
-  db.appendChild(section('Receiver info', null, kvTable([
+  db.appendChild(sectionWithToggle('Receiver info', null, mkJsonToggle(), kvTable([
     ['ID', r.id], ['Label', r.label||'—'], ['Description', r.description||'—'],
     ['Node', nodeEl], ['Device', devEl],
     ['Format', badge('b-'+fmt, r.format||'—')],
@@ -1429,6 +1518,7 @@ function dReceiver(r) {
     (() => { const gh = decodeGrouphint(r.tags); return [gh.label, gh.value]; })(),
     ['Version', r.version||'—'],
   ])));
+  db.appendChild(section('IS-05 Connection', null, connWrap));
 
   // If routed, show sender details inline
   if (tx) {
