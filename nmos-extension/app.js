@@ -432,11 +432,15 @@ async function doQuery(silent = false) {
       }
 
       // Same group — sort by role (video < audio < data/anc) then by channel index
-      // Supports both BCP-002-01 short codes (vid/aud/anc) and SNP-style (vs/as/ds for senders, vd/ad/dd for receivers)
+      // Supports many vendor role codes:
+      // - BCP-002-01 standard: vid/aud/anc
+      // - SNP senders: vis (video), aus (audio), ans/das (ancillary)
+      // - SNP receivers: vd (video), ad (audio), dd (data)
+      // - Legacy short codes: vs/as/ds, video/audio/data, mux
       const roleOrder = {
-        vid:0, video:0, vs:0, vd:0,
-        aud:1, audio:1, as:1, ad:1,
-        anc:2, data:2, dd:2, ds:2,
+        vid:0, video:0, vis:0, vs:0, vd:0,
+        aud:1, audio:1, aus:1, as:1, ad:1,
+        anc:2, ans:2, data:2, das:2, dd:2, ds:2,
         mux:3
       };
       const ra = roleOrder[ga.role] ?? 9;
@@ -941,6 +945,86 @@ const FIELD_KEYS = {
   'Sample rate':'sample_rate', 'Channels':'channels',
 };
 
+// NMOS field descriptions — keyed by either friendly name or raw JSON key
+const FIELD_HELP = {
+  // Identity
+  'id':              { title:'id', text:'A unique fingerprint for this item, like a serial number. No two are the same. The system uses this to find this exact sender, receiver, or device.' },
+  'ID':              { title:'id', text:'A unique fingerprint for this item, like a serial number. No two are the same. The system uses this to find this exact sender, receiver, or device.' },
+  'label':           { title:'label', text:'The friendly name shown to humans (e.g. "Camera 1" or "Audio Mix Bus"). Two things can share a label — the ID is what makes them unique.' },
+  'Label':           { title:'label', text:'The friendly name shown to humans (e.g. "Camera 1" or "Audio Mix Bus"). Two things can share a label — the ID is what makes them unique.' },
+  'description':     { title:'description', text:'Extra notes about this item. Some devices use this for handy info — for example, SNP puts the multicast destination address here.' },
+  'Description':     { title:'description', text:'Extra notes about this item. Some devices use this for handy info — for example, SNP puts the multicast destination address here.' },
+  'version':         { title:'version', text:'Timestamp showing when this item last changed, in "seconds:nanoseconds" since 1970. Updates every time anything about this resource changes.' },
+  'Version':         { title:'version', text:'Timestamp showing when this item last changed, in "seconds:nanoseconds" since 1970. Updates every time anything about this resource changes.' },
+  'tags':            { title:'tags', text:'Optional labels that devices add for extra info. The most common is "grouphint" — which tells you which video, audio, and data streams belong together as one group.' },
+  'Tags':            { title:'tags', text:'Optional labels that devices add for extra info. The most common is "grouphint" — which tells you which video, audio, and data streams belong together as one group.' },
+  'Tags (BCP-002-01)':{ title:'tags (BCP-002-01)', text:'Tells you which streams belong together using numbers. Format: [group]:role+number, e.g. [1,1,1]:vid02. Streams with the same [group] are meant to be received together (typically 1 video + 1 audio + 1 ANC).' },
+  'Tags (BCP-002-02)':{ title:'tags (BCP-002-02)', text:'Same idea as BCP-002-01 (grouping streams together) but with readable names instead of numbers, e.g. "Camera 1:Video 1".' },
+
+  // Hierarchy references
+  'node_id':         { title:'node_id', text:'Which Node this Device belongs to. A Node is the whole piece of equipment — like a camera body, production switcher, or processing card.' },
+  'Node':            { title:'node_id', text:'Which Node this Device belongs to. A Node is the whole piece of equipment — like a camera body, production switcher, or processing card.' },
+  'device_id':       { title:'device_id', text:'Which Device this Sender or Receiver belongs to. A Device is a logical unit inside a Node — like one camera output or one audio mix.' },
+  'Device':          { title:'device_id', text:'Which Device this Sender or Receiver belongs to. A Device is a logical unit inside a Node — like one camera output or one audio mix.' },
+  'flow_id':         { title:'flow_id', text:'Which Flow this Sender transmits. A Flow is the actual media content — describes what video, audio, or data is being sent and in what format.' },
+  'Flow':            { title:'flow_id', text:'Which Flow this Sender transmits. A Flow is the actual media content — describes what video, audio, or data is being sent and in what format.' },
+  'source_id':       { title:'source_id', text:'Which Source this Flow originally came from. A Source is the raw original signal — like the unprocessed output from a camera sensor.' },
+  'parents':         { title:'parents', text:'Other Flows this one was created from. Used when a Flow is a converted or processed version of another (like a downscaled or transcoded copy).' },
+
+  // Transport
+  'transport':       { title:'transport', text:'How the stream travels over the network. The most common is RTP multicast (used for ST 2110 broadcast). Other options: unicast RTP, websocket, MQTT.' },
+  'Transport':       { title:'transport', text:'How the stream travels over the network. The most common is RTP multicast (used for ST 2110 broadcast). Other options: unicast RTP, websocket, MQTT.' },
+  'manifest_href':   { title:'manifest_href', text:'A link to the SDP file. SDP is a plain-text file describing everything a receiver needs to play the stream — multicast address, port, codec, PTP clock, etc.' },
+  'Manifest':        { title:'manifest_href', text:'A link to the SDP file. SDP is a plain-text file describing everything a receiver needs to play the stream — multicast address, port, codec, PTP clock, etc.' },
+  'interface_bindings':{ title:'interface_bindings', text:'Which network ports the stream uses. Two interfaces (e.g. eth2 + eth3) means ST 2022-7 redundancy is on — the stream goes out two paths, so one network failure won\'t take it down.' },
+  'Interfaces':      { title:'interface_bindings', text:'Which network ports the stream uses. Two interfaces (e.g. eth2 + eth3) means ST 2022-7 redundancy is on — the stream goes out two paths, so one network failure won\'t take it down.' },
+  'subscription':    { title:'subscription', text:'Shows whether this is connected to something. On a Sender: which Receiver is pulling from it. On a Receiver: which Sender it\'s pulling from. Null means not connected via NMOS IS-05.' },
+  'Subscription':    { title:'subscription', text:'Shows whether this is connected to something. On a Sender: which Receiver is pulling from it. On a Receiver: which Sender it\'s pulling from. Null means not connected via NMOS IS-05.' },
+
+  // Format
+  'format':          { title:'format', text:'What general kind of media this is. Four types: video, audio, data (like closed captions / ANC), and mux (multiplexed streams).' },
+  'Format':          { title:'format', text:'What general kind of media this is. Four types: video, audio, data (like closed captions / ANC), and mux (multiplexed streams).' },
+  'media_type':      { title:'media_type', text:'The specific format or codec. Examples: video/raw (uncompressed), video/jxsv (JPEG XS compressed), video/smpte291 (ANC data like captions), audio/L24 (24-bit PCM audio).' },
+  'Media type':      { title:'media_type', text:'The specific format or codec. Examples: video/raw (uncompressed), video/jxsv (JPEG XS compressed), video/smpte291 (ANC data like captions), audio/L24 (24-bit PCM audio).' },
+  'caps':            { title:'caps', text:'What this receiver can accept. Lists the media formats this receiver knows how to decode — like a "supported inputs" list.' },
+  'Caps':            { title:'caps', text:'What this receiver can accept. Lists the media formats this receiver knows how to decode — like a "supported inputs" list.' },
+
+  // Video flow specifics
+  'frame_width':     { title:'frame_width', text:'How wide the video is, in pixels. 1920 for HD, 3840 for 4K UHD, 7680 for 8K.' },
+  'frame_height':    { title:'frame_height', text:'How tall the video is, in pixels. 1080 for HD, 2160 for 4K UHD, 4320 for 8K.' },
+  'Resolution':      { title:'frame_width × frame_height', text:'Video size in pixels (width × height). 1920×1080 is HD, 3840×2160 is 4K UHD.' },
+  'grain_rate':      { title:'grain_rate', text:'How many frames per second, written as a fraction. 60000/1001 = 59.94 fps (NTSC), 30000/1001 = 29.97 fps, 25/1 = 25 fps (PAL), 24/1 = 24 fps (cinema).' },
+  'Frame rate':      { title:'grain_rate', text:'How many frames per second, written as a fraction. 60000/1001 = 59.94 fps (NTSC), 30000/1001 = 29.97 fps, 25/1 = 25 fps (PAL), 24/1 = 24 fps (cinema).' },
+  'colorspace':      { title:'colorspace', text:'Which color standard the video uses. BT601 = older SD. BT709 = HD broadcast. BT2020 = 4K UHD and HDR.' },
+  'Colorspace':      { title:'colorspace', text:'Which color standard the video uses. BT601 = older SD. BT709 = HD broadcast. BT2020 = 4K UHD and HDR.' },
+  'transfer_characteristic':{ title:'transfer_characteristic', text:'How brightness is encoded. SDR is the everyday standard. PQ and HLG are HDR (high dynamic range) — brighter highlights and deeper blacks.' },
+  'Transfer':        { title:'transfer_characteristic', text:'How brightness is encoded. SDR is the everyday standard. PQ and HLG are HDR (high dynamic range) — brighter highlights and deeper blacks.' },
+  'bit_depth':       { title:'bit_depth', text:'How many bits per color sample. 8-bit = consumer, 10-bit = broadcast standard, 12-bit = mastering / cinema quality.' },
+  'Bit depth':       { title:'bit_depth', text:'How many bits per color sample. 8-bit = consumer, 10-bit = broadcast standard, 12-bit = mastering / cinema quality.' },
+  'interlace_mode':  { title:'interlace_mode', text:'Whether the video is interlaced (older style, alternating lines per frame) or progressive (modern, full frames). Most current broadcast is progressive.' },
+  'components':      { title:'components', text:'Technical details about the color channels (Y, Cb, Cr for video). Usually you don\'t need to read this directly.' },
+
+  // Audio flow specifics
+  'sample_rate':     { title:'sample_rate', text:'How many audio samples per second, as a fraction. 48000/1 = 48 kHz is the broadcast standard.' },
+  'Sample rate':     { title:'sample_rate', text:'How many audio samples per second, as a fraction. 48000/1 = 48 kHz is the broadcast standard.' },
+  'channels':        { title:'channels', text:'List of audio channels and what each one is — L (left), R (right), C (center), LFE (subwoofer), etc. Tells you the speaker layout.' },
+  'Channels':        { title:'channels', text:'List of audio channels and what each one is — L (left), R (right), C (center), LFE (subwoofer), etc. Tells you the speaker layout.' },
+
+  // Node specifics
+  'hostname':        { title:'hostname', text:'The Node\'s DNS name on the network. May be blank if the Node only uses IP addresses.' },
+  'href':            { title:'href', text:'The Node\'s base web address (URL) — where to reach its API.' },
+  'api':             { title:'api', text:'Which NMOS API versions this Node supports. IS-04 ranges from v1.0 to v1.3 — newer versions add more features.' },
+  'services':        { title:'services', text:'Extra services this Node offers beyond the standard NMOS APIs.' },
+  'clocks':          { title:'clocks', text:'The timing references this Node uses — usually PTP (Precision Time Protocol). PTP keeps everything synchronized in IP video systems and is required for ST 2110.' },
+  'interfaces':      { title:'interfaces', text:'Network ports on this Node, with their MAC addresses and what they\'re connected to.' },
+
+  // Device specifics
+  'type':            { title:'type', text:'What category of device this is. Common types: "pipeline" (signal processing), "generic" (general purpose), "proxy" (gateway to non-NMOS equipment).' },
+  'controls':        { title:'controls', text:'Other APIs this Device offers. The most important one is IS-05 (Connection Management) — that\'s the actual routing / take control interface.' },
+  'senders':         { title:'senders (deprecated)', text:'Old way of listing the Sender IDs on this Device. Modern apps should query /senders?device_id={id} instead — this field will go away eventually.' },
+  'receivers':       { title:'receivers (deprecated)', text:'Old way of listing the Receiver IDs on this Device. Modern apps should query /receivers?device_id={id} instead — this field will go away eventually.' },
+};
+
 function mkJsonToggle() {
   const btn = document.createElement('span');
   const active = S.jsonKeys;
@@ -994,7 +1078,7 @@ function resolveUuid(uuid, type) {
   lbl.textContent = item.label || item.hostname || uuid;
   const u = document.createElement('span');
   u.style.cssText = 'color:var(--text2);font-size:9px;margin-left:8px;font-family:var(--mono);opacity:0.6;';
-  u.textContent = uuid.substring(0, 8) + '...';
+  u.textContent = uuid;
   u.title = uuid;
   wrap.appendChild(lbl);
   wrap.appendChild(u);
@@ -1011,6 +1095,9 @@ function kvTable(rows) {
       th.style.color = 'var(--blue)';
       th.style.fontFamily = 'var(--mono)';
     }
+    // Attach help tooltip if we have a description for this key
+    const help = FIELD_HELP[k] || FIELD_HELP[displayKey];
+    if (help) attachHelpTooltip(th, help);
     tr.appendChild(th);
     const td = document.createElement('td');
     td.className = 'kv-v';
@@ -1018,11 +1105,91 @@ function kvTable(rows) {
     else if (typeof v === 'string') td.textContent = v;
     else if (typeof v === 'number' || typeof v === 'boolean') td.textContent = String(v);
     else if (v instanceof Node) td.appendChild(v);
-    else td.textContent = JSON.stringify(v); // fallback for unexpected objects
+    else td.textContent = JSON.stringify(v);
     tr.appendChild(td);
     table.appendChild(tr);
   });
   return table;
+}
+
+// ═══ Help tooltip system ═══
+// Hover any key cell for 1 second → tooltip with NMOS description appears
+
+let helpTooltipEl = null;
+let helpHoverTimer = null;
+let helpCurrentTarget = null;
+
+function ensureHelpTooltip() {
+  if (helpTooltipEl) return;
+  helpTooltipEl = document.createElement('div');
+  helpTooltipEl.style.cssText = 'position:fixed;display:none;background:var(--bg2);color:var(--text0);border:1px solid var(--blue);border-radius:6px;padding:10px 12px;font-size:11px;font-family:system-ui,-apple-system,sans-serif;line-height:1.5;max-width:420px;z-index:10000;box-shadow:0 8px 28px rgba(0,0,0,0.7);pointer-events:none;opacity:0;transition:opacity .12s ease;';
+  document.body.appendChild(helpTooltipEl);
+  // Hide on scroll anywhere in the page
+  window.addEventListener('scroll', hideHelpTooltip, true);
+  window.addEventListener('resize', hideHelpTooltip);
+}
+
+function showHelpTooltip(targetEl, help) {
+  ensureHelpTooltip();
+  helpTooltipEl.innerHTML = '';
+  const title = document.createElement('div');
+  title.style.cssText = 'color:var(--blue);font-weight:700;margin-bottom:5px;font-family:var(--mono);font-size:10px;letter-spacing:.02em;';
+  title.textContent = help.title;
+  const body = document.createElement('div');
+  body.style.cssText = 'color:var(--text1);font-size:11px;';
+  body.textContent = help.text;
+  helpTooltipEl.appendChild(title);
+  helpTooltipEl.appendChild(body);
+
+  // Make visible but transparent so we can measure
+  helpTooltipEl.style.display = 'block';
+  helpTooltipEl.style.opacity = '0';
+
+  const r = targetEl.getBoundingClientRect();
+  const tt = helpTooltipEl.getBoundingClientRect();
+  const margin = 8;
+
+  // Default position: below the key, aligned to its left
+  let top  = r.bottom + 6;
+  let left = r.left;
+
+  // If it would overflow bottom of viewport, put it above
+  if (top + tt.height + margin > window.innerHeight) {
+    top = r.top - tt.height - 6;
+  }
+  // Clamp horizontally
+  if (left + tt.width + margin > window.innerWidth) {
+    left = window.innerWidth - tt.width - margin;
+  }
+  if (left < margin) left = margin;
+  if (top < margin)  top  = margin;
+
+  helpTooltipEl.style.top = top + 'px';
+  helpTooltipEl.style.left = left + 'px';
+  // Fade in
+  requestAnimationFrame(() => { if (helpTooltipEl) helpTooltipEl.style.opacity = '1'; });
+}
+
+function hideHelpTooltip() {
+  if (helpHoverTimer) { clearTimeout(helpHoverTimer); helpHoverTimer = null; }
+  helpCurrentTarget = null;
+  if (helpTooltipEl) {
+    helpTooltipEl.style.opacity = '0';
+    helpTooltipEl.style.display = 'none';
+  }
+}
+
+function attachHelpTooltip(el, help) {
+  el.classList.add('kk-help');
+  el.addEventListener('mouseenter', () => {
+    helpCurrentTarget = el;
+    if (helpHoverTimer) clearTimeout(helpHoverTimer);
+    helpHoverTimer = setTimeout(() => {
+      // Only show if still hovering this element
+      if (helpCurrentTarget === el) showHelpTooltip(el, help);
+    }, 1000);
+  });
+  el.addEventListener('mouseleave', hideHelpTooltip);
 }
 
 function section(title, count, ...children) {
@@ -1089,7 +1256,12 @@ function decodeGrouphint(tags) {
   const m = raw.match(/^\[([^\]]+)\]:([a-z]+)(\d+)$/i);
   if (m) {
     const group = m[1];
-    const roleMap = { vid:'Video', video:'Video', aud:'Audio', audio:'Audio', anc:'ANC', data:'ANC', dd:'Data', mux:'Mux' };
+    const roleMap = {
+      vid:'Video', video:'Video', vis:'Video', vs:'Video', vd:'Video',
+      aud:'Audio', audio:'Audio', aus:'Audio', as:'Audio', ad:'Audio',
+      anc:'ANC', ans:'ANC', data:'Data', das:'Data', dd:'Data', ds:'Data',
+      mux:'Mux'
+    };
     const role = roleMap[m[2].toLowerCase()] || m[2];
     const ch = parseInt(m[3], 10);
     return { label: 'Grouphint (BCP-002-01)', value: `${raw} — Group [${group}] · ${role} channel ${ch}` };
@@ -1157,7 +1329,7 @@ function fmtColor(fmt) {
   if (fmt === 'audio') return { fg: '#3dba6f', bg: '#122a1e' };
   if (fmt === 'anc' || fmt === 'data') return { fg: '#f0a030', bg: '#2e1e08' };
   if (fmt === 'mux') return { fg: '#9b72f0', bg: '#1e1038' };
-  return { fg: '#ffffff', bg: '#1a1e25' };
+  return { fg: '#f0a030', bg: '#2e1e08' }; // default to ANC color for unknown formats
 }
 
 function mkDetailBadge(word, color, bgColor, fontSize) {
@@ -1317,7 +1489,7 @@ function dSender(s) {
   const active = !!(s.subscription && s.subscription.active);
   const rxId   = s.subscription && s.subscription.receiver_id;
   const rx     = rxId ? S.data.receivers.find(r => r.id === rxId) : null;
-  const fmt    = flow ? formatType(flow.format) : '';
+  const fmt    = senderFormat(s, S.data.flows);
   const node   = S.data.nodes.find(n => n.id === s.node_id) || (S.data.nodes.length === 1 ? S.data.nodes[0] : null);
   const dev    = S.data.devices.find(d => d.id === s.device_id);
 
@@ -1795,6 +1967,18 @@ function formatType(urn) {
   if (urn.includes('video')) return 'video';
   if (urn.includes('audio')) return 'audio';
   if (urn.includes('mux'))   return 'mux';
+  return 'data';
+}
+
+// Determine format for a sender from flow OR caps fallback (used by detail panel only)
+function senderFormat(s, flows) {
+  const flow = flows && flows.find(f => f.id === s.flow_id);
+  if (flow && flow.format) return formatType(flow.format);
+  if (s.caps && s.caps.media_types && s.caps.media_types.length) {
+    const mt = s.caps.media_types[0];
+    if (mt.includes('smpte291')) return 'data';
+    return formatType(mt);
+  }
   return 'data';
 }
 
