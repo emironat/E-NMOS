@@ -11,6 +11,7 @@ const S = {
   apiBase: '',
   sortMode: {}, // keyed by 'sg:{devId}' or 'rg:{devId}' → 'sorted' | 'api'
   jsonKeys: false, // toggle between friendly labels and raw JSON keys
+  lookup: false, // toggle UUID resolution to human labels
 };
 
 // ── DOM refs ──
@@ -267,6 +268,22 @@ detailPanel.addEventListener('click', e => {
   const id = rest.join(':');
   S.sel = { type, id };
   S.open.add(id);
+  // Auto-expand parent device/folder so the selected row is visible in the tree
+  if (type === 'sender' || type === 'receiver') {
+    const list = type === 'sender' ? S.data.senders : S.data.receivers;
+    const item = list.find(x => x.id === id);
+    if (item) {
+      S.open.add(item.device_id);
+      const folderKey = (type === 'sender' ? 'sg:' : 'rg:') + item.device_id;
+      S.open.add(folderKey);
+      // Also expand the parent node
+      const dev = S.data.devices.find(d => d.id === item.device_id);
+      if (dev) S.open.add(dev.node_id);
+    }
+  } else if (type === 'device') {
+    const dev = S.data.devices.find(d => d.id === id);
+    if (dev) S.open.add(dev.node_id);
+  }
   renderTree();
   renderDetail();
   detailPanel.scrollTop = 0;
@@ -352,13 +369,34 @@ async function doQuery(silent = false) {
     function parseGrouphint(r) {
       const tags = r.tags && r.tags[GROUPHINT];
       if (!tags || !tags.length) return null;
-      // e.g. "[1,2,3]:aud05"
-      const m = tags[0].match(/^\[([^\]]+)\]:([a-z]+)(\d+)$/i);
-      if (!m) return null;
-      const nums = m[1].split(',').map(Number); // [1,2,3]
-      const role = m[2].toLowerCase();           // "aud"
-      const idx  = parseInt(m[3], 10);           // 5
-      return { nums, role, idx };
+      const raw = tags[0];
+      // BCP-002-01: "[1,2,3]:aud05" — numeric tuple + role+idx
+      const m1 = raw.match(/^\[([^\]]+)\]:([a-z]+)(\d+)$/i);
+      if (m1) {
+        return {
+          group: m1[1],  // "1,2,3"
+          nums: m1[1].split(',').map(Number),
+          role: m1[2].toLowerCase(),
+          idx: parseInt(m1[3], 10)
+        };
+      }
+      // BCP-002-02: "Group Name:Role Name" — named string format
+      const m2 = raw.match(/^(.+?):(.+?)\s*(\d+)?$/);
+      if (m2) {
+        const role = m2[2].trim().toLowerCase();
+        // Map role names to short codes for consistent sorting
+        let roleCode = role;
+        if (role.startsWith('video')) roleCode = 'video';
+        else if (role.startsWith('audio')) roleCode = 'audio';
+        else if (role.startsWith('anc') || role.startsWith('data')) roleCode = 'anc';
+        return {
+          group: m2[1].trim(),
+          nums: [],
+          role: roleCode,
+          idx: m2[3] ? parseInt(m2[3], 10) : 1
+        };
+      }
+      return null;
     }
 
     function cmpGrouphint(a, b) {
@@ -381,15 +419,26 @@ async function doQuery(silent = false) {
       if (!ga) return 1;
       if (!gb) return -1;
 
-      // Compare FULL group tuple [1,1,1] — this identifies the device/slot group
-      const len = Math.max(ga.nums.length, gb.nums.length);
-      for (let i = 0; i < len; i++) {
-        const d = (ga.nums[i] || 0) - (gb.nums[i] || 0);
-        if (d !== 0) return d;
+      // Compare group identifier — nums (BCP-002-01) or named string (BCP-002-02)
+      if (ga.nums.length && gb.nums.length) {
+        const len = Math.max(ga.nums.length, gb.nums.length);
+        for (let i = 0; i < len; i++) {
+          const d = (ga.nums[i] || 0) - (gb.nums[i] || 0);
+          if (d !== 0) return d;
+        }
+      } else {
+        const gc = (ga.group||'').localeCompare(gb.group||'', undefined, {numeric:true, sensitivity:'base'});
+        if (gc !== 0) return gc;
       }
 
-      // Same group — sort by role (vid < aud < anc) then by channel index
-      const roleOrder = { vid:0, video:0, aud:1, audio:1, anc:2, data:2, dd:2, mux:3 };
+      // Same group — sort by role (video < audio < data/anc) then by channel index
+      // Supports both BCP-002-01 short codes (vid/aud/anc) and SNP-style (vs/as/ds for senders, vd/ad/dd for receivers)
+      const roleOrder = {
+        vid:0, video:0, vs:0, vd:0,
+        aud:1, audio:1, as:1, ad:1,
+        anc:2, data:2, dd:2, ds:2,
+        mux:3
+      };
       const ra = roleOrder[ga.role] ?? 9;
       const rb = roleOrder[gb.role] ?? 9;
       if (ra !== rb) return ra - rb;
@@ -531,7 +580,7 @@ function renderTree() {
             const flow   = flows.find(f => f.id === s.flow_id);
             const fmt    = flow ? formatType(flow.format) : '';
             const active = !!(s.subscription && s.subscription.active);
-            const selCls = S.sel.type === 'sender' && S.sel.id === s.id ? ' sel-sender' : '';
+            const selCls = S.sel.type === 'sender' && S.sel.id === s.id ? ' sel-leaf sel-' + (fmt||'mux') : '';
             const leaf = mkRow('row-leaf' + selCls, s.id, 'sender', 'select', false, false);
             leaf.appendChild(span('dot ' + (active ? 'dot-on-'+fmt : 'dot-off-'+fmt), ''));
             const sLbl=txt('span','l-lbl',s.label||shortId(s.id));sLbl.title=s.label||s.id;leaf.appendChild(sLbl);
@@ -564,7 +613,7 @@ function renderTree() {
           receiverList.forEach(r => {
             const fmt    = formatType(r.format || '');
             const active = !!(r.subscription && r.subscription.active);
-            const selCls = S.sel.type === 'receiver' && S.sel.id === r.id ? ' sel-receiver' : '';
+            const selCls = S.sel.type === 'receiver' && S.sel.id === r.id ? ' sel-leaf sel-' + (fmt||'mux') : '';
             const leaf = mkRow('row-leaf' + selCls, r.id, 'receiver', 'select', false, false);
             leaf.appendChild(span('dot ' + (active ? 'dot-on-'+fmt : 'dot-off-'+fmt), ''));
             const rLbl=txt('span','l-lbl',r.label||shortId(r.id));rLbl.title=r.label||r.id;leaf.appendChild(rLbl);
@@ -596,7 +645,7 @@ function renderTree() {
         orphanS.forEach(s => {
           const flow=flows.find(f=>f.id===s.flow_id); const fmt=flow?formatType(flow.format):'';
           const active=!!(s.subscription&&s.subscription.active);
-          const selCls=S.sel.type==='sender'&&S.sel.id===s.id?' sel-sender':'';
+          const selCls=S.sel.type==='sender'&&S.sel.id===s.id?' sel-leaf sel-'+(fmt||'mux'):'';
           const leaf=mkRow('row-leaf'+selCls,s.id,'sender','select',false,false);
           leaf.appendChild(span('dot '+(active?'dot-on-'+fmt:'dot-off-'+fmt),''));
           const sLbl2=txt('span','l-lbl',s.label||shortId(s.id));sLbl2.title=s.label||s.id;leaf.appendChild(sLbl2);
@@ -624,7 +673,7 @@ function renderTree() {
       if (orgOpen) {
         orphanR.forEach(r => {
           const fmt=formatType(r.format||''); const active=!!(r.subscription&&r.subscription.active);
-          const selCls=S.sel.type==='receiver'&&S.sel.id===r.id?' sel-receiver':'';
+          const selCls=S.sel.type==='receiver'&&S.sel.id===r.id?' sel-leaf sel-'+(fmt||'mux'):'';
           const leaf=mkRow('row-leaf'+selCls,r.id,'receiver','select',false,false);
           leaf.appendChild(span('dot '+(active?'dot-on-'+fmt:'dot-off-'+fmt),''));
           const rLbl2=txt('span','l-lbl',r.label||shortId(r.id));rLbl2.title=r.label||r.id;leaf.appendChild(rLbl2);
@@ -640,6 +689,19 @@ function renderTree() {
   });
 
   treeBody.appendChild(frag);
+
+  // Auto-scroll the selected row into view (after DOM is in place)
+  if (S.sel.id) {
+    const selRow = treeBody.querySelector('.sel-leaf, .row-device.sel, .row-node.sel');
+    if (selRow) {
+      const rowRect = selRow.getBoundingClientRect();
+      const treeRect = treeBody.getBoundingClientRect();
+      // Only scroll if the row is outside the visible area
+      if (rowRect.top < treeRect.top || rowRect.bottom > treeRect.bottom) {
+        selRow.scrollIntoView({ block: 'center', behavior: 'smooth' });
+      }
+    }
+  }
 }
 
 function mkLetterIcon(letter, size, color, bgColor) {
@@ -687,7 +749,7 @@ function mkWordBadge(word, color, bgColor) {
 
 function mkRow(cls, id, type, role, open, sel) {
   const row = document.createElement('div');
-  row.className = cls;
+  row.className = cls + (sel ? ' sel' : '') + (open ? ' open' : '');
   row.dataset.id   = id;
   row.dataset.type = type;
   row.dataset.role = role;
@@ -830,10 +892,18 @@ function renderDetail() {
     detailPanel.appendChild(wrap);
     return;
   }
-  if (type === 'node')     dNode(S.data.nodes.find(n => n.id === id));
-  if (type === 'device')   dDevice(S.data.devices.find(d => d.id === id));
-  if (type === 'sender')   dSender(S.data.senders.find(s => s.id === id));
-  if (type === 'receiver') dReceiver(S.data.receivers.find(r => r.id === id));
+  try {
+    if (type === 'node')     dNode(S.data.nodes.find(n => n.id === id));
+    if (type === 'device')   dDevice(S.data.devices.find(d => d.id === id));
+    if (type === 'sender')   dSender(S.data.senders.find(s => s.id === id));
+    if (type === 'receiver') dReceiver(S.data.receivers.find(r => r.id === id));
+  } catch (e) {
+    const err = el('div', '');
+    err.style.cssText = 'color:var(--amber);padding:20px;font-size:11px;font-family:var(--mono);';
+    err.textContent = '⚠ Error rendering detail: ' + (e.message || e);
+    detailPanel.appendChild(err);
+    console.error('renderDetail error:', e);
+  }
 }
 
 // nav link helper
@@ -889,6 +959,48 @@ function mkJsonToggle() {
   return btn;
 }
 
+function mkLookupToggle() {
+  const btn = document.createElement('span');
+  const active = S.lookup;
+  btn.style.cssText = `font-size:8px;cursor:pointer;padding:2px 7px;border-radius:3px;border:1px solid ${active ? 'var(--teal)' : 'var(--border2)'};color:${active ? 'var(--teal)' : 'var(--text2)'};background:${active ? 'var(--teal-dim)' : 'none'};margin-left:6px;font-family:var(--mono);flex-shrink:0;transition:border-color .15s,color .15s;`;
+  btn.textContent = '⊕ Lookup';
+  btn.title = active ? 'Resolving UUIDs to labels — click for raw UUIDs' : 'Showing raw UUIDs — click to resolve to labels';
+  if (!active) {
+    btn.addEventListener('mouseenter', () => { btn.style.borderColor='var(--teal)'; btn.style.color='var(--teal)'; });
+    btn.addEventListener('mouseleave', () => { btn.style.borderColor='var(--border2)'; btn.style.color='var(--text2)'; });
+  }
+  btn.addEventListener('click', e => {
+    e.stopPropagation();
+    S.lookup = !S.lookup;
+    renderDetail();
+  });
+  return btn;
+}
+
+// Returns a DOM element showing "label uuid_short" if lookup ON, else plain UUID
+function resolveUuid(uuid, type) {
+  if (!uuid) return '—';
+  if (!S.lookup) return uuid;
+  let item = null;
+  if (type === 'device')   item = S.data.devices.find(d => d.id === uuid);
+  else if (type === 'flow') item = S.data.flows.find(f => f.id === uuid);
+  else if (type === 'sender') item = S.data.senders.find(s => s.id === uuid);
+  else if (type === 'receiver') item = S.data.receivers.find(r => r.id === uuid);
+  else if (type === 'node') item = S.data.nodes.find(n => n.id === uuid);
+  if (!item) return uuid;
+  const wrap = document.createElement('span');
+  const lbl = document.createElement('span');
+  lbl.style.color = 'var(--teal)';
+  lbl.textContent = item.label || item.hostname || uuid;
+  const u = document.createElement('span');
+  u.style.cssText = 'color:var(--text2);font-size:9px;margin-left:8px;font-family:var(--mono);opacity:0.6;';
+  u.textContent = uuid.substring(0, 8) + '...';
+  u.title = uuid;
+  wrap.appendChild(lbl);
+  wrap.appendChild(u);
+  return wrap;
+}
+
 function kvTable(rows) {
   const table = el('table', 'kv');
   rows.forEach(([k, v]) => {
@@ -902,8 +1014,11 @@ function kvTable(rows) {
     tr.appendChild(th);
     const td = document.createElement('td');
     td.className = 'kv-v';
-    if (typeof v === 'string') td.textContent = v;
-    else if (v) td.appendChild(v);
+    if (v == null) td.textContent = '—';
+    else if (typeof v === 'string') td.textContent = v;
+    else if (typeof v === 'number' || typeof v === 'boolean') td.textContent = String(v);
+    else if (v instanceof Node) td.appendChild(v);
+    else td.textContent = JSON.stringify(v); // fallback for unexpected objects
     tr.appendChild(td);
     table.appendChild(tr);
   });
@@ -922,14 +1037,16 @@ function section(title, count, ...children) {
   return sec;
 }
 
-function sectionWithToggle(title, count, toggleBtn, ...children) {
+function sectionWithToggle(title, count, toggleBtns, ...children) {
   const sec = el('div', 'section');
   const sh  = el('div', 'sh');
   const titleNode = document.createElement('span');
   titleNode.textContent = title;
   sh.appendChild(titleNode);
   if (count !== null) sh.appendChild(txt('span', 'sh-count', String(count)));
-  sh.appendChild(toggleBtn);
+  // toggleBtns can be a single element or an array
+  if (Array.isArray(toggleBtns)) toggleBtns.forEach(b => sh.appendChild(b));
+  else sh.appendChild(toggleBtns);
   sec.appendChild(sh);
   children.forEach(c => sec.appendChild(c));
   return sec;
@@ -990,14 +1107,25 @@ function mkSortBtn(key, items) {
   const GROUPHINT = 'urn:x-nmos:tag:grouphint/v1.0';
   const btn = document.createElement('span');
   const sorted = S.sortMode[key] !== 'api';
-  const hasGrouphint = items && items.some(x => x.tags && x.tags[GROUPHINT]);
+
+  // Detect which BCP version is in use by checking the format of the first grouphint
+  let bcpVersion = null;
+  if (items && items.length) {
+    for (const x of items) {
+      const tag = x.tags && x.tags[GROUPHINT] && x.tags[GROUPHINT][0];
+      if (tag) {
+        bcpVersion = /^\[[^\]]+\]:[a-z]+\d+$/i.test(tag) ? 'BCP-002-01' : 'BCP-002-02';
+        break;
+      }
+    }
+  }
 
   let sortLabel = '[sorted: API]';
-  if (sorted) sortLabel = hasGrouphint ? '[sorted: BCP-002-01]' : '[sorted: Label]';
+  if (sorted) sortLabel = bcpVersion ? '[sorted: ' + bcpVersion + ']' : '[sorted: Label]';
 
   btn.textContent = sortLabel;
   btn.title = sorted
-    ? `Sorted by ${hasGrouphint ? 'grouphint tag (BCP-002-01)' : 'label (no grouphint found)'} — click for API order`
+    ? `Sorted by ${bcpVersion ? 'grouphint tag (' + bcpVersion + ')' : 'label (no grouphint found)'} — click for API order`
     : 'Showing raw API order — click for sorted order';
   btn.style.cssText = `font-family:var(--mono);font-size:10px;font-weight:400;cursor:pointer;flex-shrink:0;color:${sorted ? 'var(--text3)' : 'var(--text1)'};margin-left:6px;`;
   btn.addEventListener('click', e => {
@@ -1024,6 +1152,14 @@ function mkFolderApiBtn(endpoint) {
 }
 
 // Word badge for detail panel headers — NODE, DEVICE, SENDER, RECEIVER
+function fmtColor(fmt) {
+  if (fmt === 'video') return { fg: '#4a9eff', bg: '#162840' };
+  if (fmt === 'audio') return { fg: '#3dba6f', bg: '#122a1e' };
+  if (fmt === 'anc' || fmt === 'data') return { fg: '#f0a030', bg: '#2e1e08' };
+  if (fmt === 'mux') return { fg: '#9b72f0', bg: '#1e1038' };
+  return { fg: '#ffffff', bg: '#1a1e25' };
+}
+
 function mkDetailBadge(word, color, bgColor, fontSize) {
   const wrap = document.createElement('span');
   wrap.style.cssText = `display:inline-flex;align-items:center;justify-content:center;width:56px;height:56px;border-radius:8px;background:${bgColor};border:1.5px solid ${color};flex-shrink:0;`;
@@ -1186,7 +1322,8 @@ function dSender(s) {
   const dev    = S.data.devices.find(d => d.id === s.device_id);
 
   const dh = el('div', 'dh');
-  dh.appendChild(mkDetailBadge('SENDER', '#ffffff', '#1a1e25', 11));
+  const sCol = fmtColor(fmt);
+  dh.appendChild(mkDetailBadge('SENDER', sCol.fg, sCol.bg, 11));
   const dhInfo = el('div', 'dh-info');
   dhInfo.appendChild(txt('div', 'dh-title', s.label || shortId(s.id)));
   const meta = el('div', 'dh-meta');
@@ -1227,27 +1364,88 @@ function dSender(s) {
   db.appendChild(section('Subscription', null, subBox(active?'→':'⊝', 'Routed to receiver', rxValEl, badge(active?'b-active':'b-inactive', active?'ACTIVE':'INACTIVE'))));
 
   // Sender info
-  const nodeEl = node ? (() => { const v = txt('span', 'clickable', node.label||node.hostname||s.node_id); v.dataset.nav = 'node:' + node.id; v.style.color = 'var(--text1)'; return v; })() : (s.node_id||'—');
-  const devEl  = dev  ? (() => { const v = txt('span', 'clickable', dev.label||s.device_id); v.dataset.nav = 'device:' + dev.id; v.style.color = 'var(--text1)'; return v; })() : (s.device_id||'—');
+  const nodeEl = node
+    ? (S.jsonKeys
+        ? node.id
+        : (() => { const v = txt('span', 'clickable', node.label||node.hostname||s.node_id); v.dataset.nav = 'node:' + node.id; v.style.color = 'var(--text1)'; return v; })())
+    : (s.node_id||'—');
+  const devEl = dev
+    ? (S.jsonKeys
+        ? dev.id
+        : (() => { const v = txt('span', 'clickable', dev.label||s.device_id); v.dataset.nav = 'device:' + dev.id; v.style.color = 'var(--text1)'; return v; })())
+    : (s.device_id||'—');
   const mfEl   = s.manifest_href ? (() => { const a = document.createElement('a'); a.href = s.manifest_href; a.target = '_blank'; a.textContent = s.manifest_href; return a; })() : '—';
-  db.appendChild(sectionWithToggle('Sender info', null, mkJsonToggle(), kvTable([
-    ['ID', s.id], ['Label', s.label||'—'], ['Description', s.description||'—'],
-    ['Node', nodeEl], ['Device', devEl], ['Transport', s.transport||'—'],
-    ['Interfaces', (s.interface_bindings||[]).join(', ')||'—'], ['Manifest', mfEl],
-    (() => { const gh = decodeGrouphint(s.tags); return [gh.label, gh.value]; })(),
-    ['Version', s.version||'—'],
-  ])));
+  const FRIENDLY_LABELS_S = {
+    id: 'ID', label: 'Label', description: 'Description', device_id: 'Device',
+    transport: 'Transport', interface_bindings: 'Interfaces',
+    manifest_href: 'Manifest', flow_id: 'Flow', tags: 'Tags',
+    subscription: 'Subscription', version: 'Version', caps: 'Caps',
+  };
+  const sRows = [];
+  Object.keys(s).forEach(k => {
+    if (S.jsonKeys) {
+      const v = s[k];
+      if (k === 'device_id' && S.lookup) {
+        sRows.push([k, resolveUuid(v, 'device')]);
+      } else if (k === 'flow_id' && S.lookup) {
+        sRows.push([k, resolveUuid(v, 'flow')]);
+      } else if (k === 'subscription' && S.lookup && v && v.receiver_id) {
+        sRows.push([k, resolveUuid(v.receiver_id, 'receiver')]);
+      } else if (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') sRows.push([k, String(v)]);
+      else if (v === null) sRows.push([k, 'null']);
+      else sRows.push([k, JSON.stringify(v)]);
+    } else {
+      const key = FRIENDLY_LABELS_S[k] || k;
+      if (k === 'device_id') {
+        sRows.push([key, resolveUuid(s.device_id, 'device')]);
+      } else if (k === 'flow_id') {
+        sRows.push([key, resolveUuid(s.flow_id, 'flow')]);
+      } else if (k === 'interface_bindings') {
+        sRows.push([key, (s.interface_bindings||[]).join(', ')||'—']);
+      } else if (k === 'manifest_href') {
+        sRows.push([key, mfEl]);
+      } else if (k === 'tags') {
+        const gh = decodeGrouphint(s.tags) || { label: 'Tags', value: '—' };
+        const lbl = gh.label || 'Tags';
+        const tagsKey = lbl.startsWith('Grouphint') ? 'Tags (' + lbl.replace('Grouphint (','').replace(')','') + ')' : 'Tags';
+        sRows.push([tagsKey, gh.value !== '—' ? gh.value : '—']);
+      } else if (k === 'subscription') {
+        const sub = s.subscription || {};
+        if (S.lookup && sub.receiver_id) {
+          const wrap = document.createElement('span');
+          wrap.appendChild(document.createTextNode((sub.active ? 'Active' : 'Inactive') + ' · receiver '));
+          wrap.appendChild(resolveUuid(sub.receiver_id, 'receiver'));
+          sRows.push([key, wrap]);
+        } else {
+          sRows.push([key, (sub.active ? 'Active' : 'Inactive') + (sub.receiver_id ? ' · receiver ' + sub.receiver_id : ' · no receiver')]);
+        }
+      } else {
+        sRows.push([key, s[k]||'—']);
+      }
+    }
+  });
+  db.appendChild(sectionWithToggle('Sender info', null, [mkJsonToggle(), mkLookupToggle()], kvTable(sRows)));
 
   // Flow
   if (flow) {
-    const rows = [['Format', badge('b-'+fmt, flow.format||'—')], ['Media type', flow.media_type||'—']];
-    if (flow.frame_width)  rows.push(['Resolution', flow.frame_width+'×'+flow.frame_height]);
-    if (flow.grain_rate)   rows.push(['Frame rate', flow.grain_rate.numerator+'/'+flow.grain_rate.denominator]);
+    const rows = [
+      ['Format', flow.format||'—'],
+      ['Media type', flow.media_type||'—']
+    ];
+    if (flow.frame_width) {
+      if (S.jsonKeys) {
+        rows.push(['frame_width', String(flow.frame_width)]);
+        if (flow.frame_height) rows.push(['frame_height', String(flow.frame_height)]);
+      } else {
+        rows.push(['Resolution', flow.frame_width+'×'+flow.frame_height]);
+      }
+    }
+    if (flow.grain_rate)   rows.push(['Frame rate', S.jsonKeys ? JSON.stringify(flow.grain_rate) : flow.grain_rate.numerator+'/'+flow.grain_rate.denominator]);
     if (flow.colorspace)   rows.push(['Colorspace', flow.colorspace]);
     if (flow.transfer_characteristic) rows.push(['Transfer', flow.transfer_characteristic]);
     if (flow.bit_depth)    rows.push(['Bit depth', String(flow.bit_depth)]);
-    if (flow.sample_rate)  rows.push(['Sample rate', String(flow.sample_rate.numerator)]);
-    if (flow.channels)     rows.push(['Channels', String(flow.channels.length)]);
+    if (flow.sample_rate)  rows.push(['Sample rate', S.jsonKeys ? JSON.stringify(flow.sample_rate) : String(flow.sample_rate.numerator)]);
+    if (flow.channels)     rows.push(['Channels', S.jsonKeys ? JSON.stringify(flow.channels) : String(flow.channels.length)]);
     db.appendChild(section('Flow', null, kvTable(rows)));
   }
 
@@ -1304,7 +1502,8 @@ function dReceiver(r) {
   const dev    = S.data.devices.find(d => d.id === r.device_id);
 
   const dh = el('div', 'dh');
-  dh.appendChild(mkDetailBadge('RECEIVER', '#ffffff', '#1a1e25', 9));
+  const rCol = fmtColor(fmt);
+  dh.appendChild(mkDetailBadge('RECEIVER', rCol.fg, rCol.bg, 9));
   const dhInfo = el('div', 'dh-info');
   dhInfo.appendChild(txt('div', 'dh-title', r.label || shortId(r.id)));
   const meta = el('div', 'dh-meta');
@@ -1515,18 +1714,62 @@ function dReceiver(r) {
 
   connWrap.appendChild(connBtn);
   connWrap.appendChild(connBox);
-  const nodeEl = node ? (() => { const v = txt('span', 'clickable', node.label||node.hostname||r.node_id||'—'); v.dataset.nav = 'node:' + node.id; v.style.color = 'var(--text1)'; return v; })() : (r.node_id||'—');
-  const devEl  = dev  ? (() => { const v = txt('span', 'clickable', dev.label||r.device_id); v.dataset.nav = 'device:' + dev.id; v.style.color = 'var(--text1)'; return v; })() : (r.device_id||'—');
-  db.appendChild(sectionWithToggle('Receiver info', null, mkJsonToggle(), kvTable([
-    ['ID', r.id], ['Label', r.label||'—'], ['Description', r.description||'—'],
-    ['Node', nodeEl], ['Device', devEl],
-    ['Format', badge('b-'+fmt, r.format||'—')],
-    ['Transport', r.transport||'—'],
-    ['Interfaces', (r.interface_bindings||[]).join(', ')||'—'],
-    ['Caps', r.caps&&r.caps.media_types ? r.caps.media_types.join(', ') : '—'],
-    (() => { const gh = decodeGrouphint(r.tags); return [gh.label, gh.value]; })(),
-    ['Version', r.version||'—'],
-  ])));
+  const nodeEl = node
+    ? (S.jsonKeys
+        ? node.id
+        : (() => { const v = txt('span', 'clickable', node.label||node.hostname||r.node_id||'—'); v.dataset.nav = 'node:' + node.id; v.style.color = 'var(--text1)'; return v; })())
+    : (r.node_id||'—');
+  const devEl = dev
+    ? (S.jsonKeys
+        ? dev.id
+        : (() => { const v = txt('span', 'clickable', dev.label||r.device_id); v.dataset.nav = 'device:' + dev.id; v.style.color = 'var(--text1)'; return v; })())
+    : (r.device_id||'—');
+  // Build rows in JSON object order — same positions in both modes
+  const FRIENDLY_LABELS_R = {
+    id: 'ID', label: 'Label', description: 'Description', device_id: 'Device',
+    format: 'Format', transport: 'Transport', interface_bindings: 'Interfaces',
+    caps: 'Caps', tags: 'Tags', subscription: 'Subscription', version: 'Version',
+  };
+  const rRows = [];
+  Object.keys(r).forEach(k => {
+    if (S.jsonKeys) {
+      const v = r[k];
+      if (k === 'device_id' && S.lookup) {
+        rRows.push([k, resolveUuid(v, 'device')]);
+      } else if (k === 'subscription' && S.lookup && v && v.sender_id) {
+        rRows.push([k, resolveUuid(v.sender_id, 'sender')]);
+      } else if (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') rRows.push([k, String(v)]);
+      else if (v === null) rRows.push([k, 'null']);
+      else rRows.push([k, JSON.stringify(v)]);
+    } else {
+      const key = FRIENDLY_LABELS_R[k] || k;
+      if (k === 'device_id') {
+        rRows.push([key, resolveUuid(r.device_id, 'device')]);
+      } else if (k === 'interface_bindings') {
+        rRows.push([key, (r.interface_bindings||[]).join(', ')||'—']);
+      } else if (k === 'caps') {
+        rRows.push([key, r.caps&&r.caps.media_types ? r.caps.media_types.join(', ') : '—']);
+      } else if (k === 'tags') {
+        const gh = decodeGrouphint(r.tags) || { label: 'Tags', value: '—' };
+        const lbl = gh.label || 'Tags';
+        const tagsKey = lbl.startsWith('Grouphint') ? 'Tags (' + lbl.replace('Grouphint (','').replace(')','') + ')' : 'Tags';
+        rRows.push([tagsKey, gh.value !== '—' ? gh.value : '—']);
+      } else if (k === 'subscription') {
+        const sub = r.subscription || {};
+        if (S.lookup && sub.sender_id) {
+          const wrap = document.createElement('span');
+          wrap.appendChild(document.createTextNode((sub.active ? 'Active' : 'Inactive') + ' · sender '));
+          wrap.appendChild(resolveUuid(sub.sender_id, 'sender'));
+          rRows.push([key, wrap]);
+        } else {
+          rRows.push([key, (sub.active ? 'Active' : 'Inactive') + (sub.sender_id ? ' · sender ' + sub.sender_id : ' · no sender')]);
+        }
+      } else {
+        rRows.push([key, r[k]||'—']);
+      }
+    }
+  });
+  db.appendChild(sectionWithToggle('Receiver info', null, [mkJsonToggle(), mkLookupToggle()], kvTable(rRows)));
   db.appendChild(section('IS-05 Connection', null, connWrap));
 
   // If routed, show sender details inline
