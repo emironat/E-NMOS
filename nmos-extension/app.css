@@ -193,6 +193,14 @@ body { background:var(--bg0); color:var(--text0); font-family:var(--mono); font-
 .f-spc  { flex:1; }
 .f-cnt  { font-size:9px; color:var(--text2); background:var(--bg3); padding:0 5px; border-radius:3px; flex-shrink:0; border:1px solid var(--border); }
 
+/* Split sort toggle: "sort | value" — looks clickable, value color shows state */
+.sort-toggle { display:inline-flex; align-items:center; border:1px solid var(--border); border-radius:4px; overflow:hidden; cursor:pointer; flex-shrink:0; margin-left:6px; font-family:var(--mono); font-size:10px; line-height:1; transition:border-color .12s; }
+.sort-toggle:hover { border-color:#4a9eff; }
+.sort-toggle-lbl { background:var(--bg3); color:var(--text2); padding:3px 6px; }
+.sort-toggle-val { padding:3px 8px; font-weight:500; }
+.sort-toggle-val.on  { background:#162840; color:#4a9eff; }
+.sort-toggle-val.api { background:#2e1e08; color:#f0a030; }
+
 /* ══ LEVEL 3: LEAF (sender / receiver) — indented 48px ══ */
 .row-leaf {
   display: flex;

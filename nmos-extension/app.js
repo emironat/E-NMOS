@@ -93,7 +93,7 @@ async function renderBookmarks() {
       ipInput.value = bm.url;
       bookmarksPanel.style.display = 'none';
       // clear tree and detail so user knows something is happening
-      treeBody.innerHTML = '<div style="color:var(--text1);font-size:13px;padding:40px 20px;text-align:center;line-height:2;">⏳<br><span style="font-size:11px;color:var(--text2);">Connecting to ' + bm.name + '…</span></div>';
+      treeBody.innerHTML = '<div style="color:var(--text1);font-size:13px;padding:40px 20px;text-align:center;line-height:2;">⏳<br><span style="font-size:11px;color:var(--text2);">Connecting to ' + escapeHtml(bm.name) + '…</span></div>';
       detailPanel.innerHTML = '<div style="color:var(--text1);font-size:13px;padding:80px 20px;text-align:center;line-height:2;">⏳<br><span style="font-size:11px;color:var(--text2);">Connecting…</span></div>';
       doQuery();
     });
@@ -290,18 +290,42 @@ detailPanel.addEventListener('click', e => {
 });
 
 // ── Fetch helpers ──
+// Wraps fetch with an AbortController timeout so a dead device can't hang the UI.
+function fetchT(url, opts = {}, ms = 8000) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), ms);
+  return fetch(url, { ...opts, signal: ctrl.signal })
+    .finally(() => clearTimeout(timer));
+}
 async function apiFetch(url) {
-  const r = await fetch(url, { headers: { Accept: 'application/json' } });
+  let r;
+  try {
+    r = await fetchT(url, { headers: { Accept: 'application/json' } });
+  } catch(e) {
+    if (e.name === 'AbortError') throw new Error('Timed out — ' + url);
+    throw e;
+  }
   if (!r.ok) throw new Error('HTTP ' + r.status + ' — ' + url);
   return r.json();
 }
 async function safe(url) {
   try {
-    const r = await fetch(url, { headers: { Accept: 'application/json' } });
+    const r = await fetchT(url, { headers: { Accept: 'application/json' } });
     if (!r.ok) return [];
     const d = await r.json();
-    return Array.isArray(d) ? d : [];
+    if (Array.isArray(d)) return d;
+    // Some registries wrap results in an envelope, e.g. { data: [...] }
+    if (d && Array.isArray(d.data)) return d.data;
+    if (d && Array.isArray(d.results)) return d.results;
+    return [];
   } catch(e) { return []; }
+}
+
+// Pick the highest NMOS API version, sorting numerically so v1.10 > v1.9.
+function highestVer(list) {
+  return list.map(v => String(v).replace(/\/$/, '')).sort((a, b) =>
+    a.localeCompare(b, undefined, { numeric: true })
+  ).reverse()[0];
 }
 
 // ── Main query ──
@@ -321,29 +345,62 @@ async function doQuery(silent = false) {
   }
 
   try {
-    // Auto-discover the versioned API base
+    // Resolve the versioned API base. Try the standard Node API path FIRST,
+    // since most devices (SNP, SPG, etc.) are single Node APIs even if their
+    // root also advertises a query interface.
     let apiBase = base;
-    const root = await apiFetch(base);
-    if (Array.isArray(root) && root.length && typeof root[0] === 'string') {
-      const clean = v => v.replace(/\/$/, '');
-      if (root.some(v => clean(v) === 'node' || clean(v) === 'query')) {
-        // e.g. /x-nmos → pick node or query
-        const pick = root.find(v => clean(v) === 'node') || root.find(v => clean(v) === 'query');
-        apiBase = base + '/' + clean(pick);
-        const verList = await apiFetch(apiBase);
-        if (Array.isArray(verList) && verList.length && typeof verList[0] === 'string' && verList[0].match(/^v\d/)) {
-          apiBase = apiBase + '/' + verList.map(clean).sort().reverse()[0];
+    let isNodeApi = false, selfNode = null;
+
+    // Helper: given a base that lists ["v1.0/","v1.3/",...], pick the newest
+    // and confirm it's a Node API by fetching /self.
+    async function tryNodeBase(nodeRoot) {
+      try {
+        const vers = await apiFetch(nodeRoot);
+        if (Array.isArray(vers) && vers.length && String(vers[0]).match(/^v\d/)) {
+          const vb = nodeRoot + '/' + highestVer(vers);
+          const s = await apiFetch(vb + '/self');
+          if (s && s.id) { selfNode = s; return vb; }
         }
-      } else if (root[0].match(/^v\d/)) {
-        // e.g. /x-nmos/node → ["v1.3/"]
-        apiBase = base + '/' + root.map(clean).sort().reverse()[0];
-      }
-      // else already at resource level e.g. ["self/","senders/",...]
+      } catch(e) {}
+      return null;
     }
 
-    // Detect Node API vs Query API
-    let isNodeApi = false, selfNode = null;
-    try { const s = await apiFetch(apiBase + '/self'); if (s && s.id) { selfNode = s; isNodeApi = true; } } catch(e) {}
+    // 1) If the user already pointed at a versioned base, /self may work directly.
+    try {
+      const s = await apiFetch(base + '/self');
+      if (s && s.id) { selfNode = s; apiBase = base; isNodeApi = true; }
+    } catch(e) {}
+
+    // 2) Try the conventional /x-nmos/node/ path on the host.
+    if (!isNodeApi) {
+      const host = base.replace(/\/x-nmos.*$/, '').replace(/\/+$/, '');
+      const nb = await tryNodeBase(host + '/x-nmos/node');
+      if (nb) { apiBase = nb; isNodeApi = true; }
+    }
+
+    // 3) Walk whatever the root advertises (node first, then query/registry).
+    if (!isNodeApi) {
+      const root = await apiFetch(base);
+      if (Array.isArray(root) && root.length && typeof root[0] === 'string') {
+        const clean = v => v.replace(/\/$/, '');
+        if (root.some(v => clean(v) === 'node')) {
+          const nb = await tryNodeBase(base + '/node');
+          if (nb) { apiBase = nb; isNodeApi = true; }
+        }
+        if (!isNodeApi && root.some(v => clean(v) === 'query')) {
+          apiBase = base + '/query';
+          const verList = await apiFetch(apiBase);
+          if (Array.isArray(verList) && verList.length && String(verList[0]).match(/^v\d/)) {
+            apiBase = apiBase + '/' + highestVer(verList);
+          }
+        } else if (!isNodeApi && String(root[0]).match(/^v\d/)) {
+          // Already at /x-nmos/node or /x-nmos/query → ["v1.3/"]
+          apiBase = base + '/' + highestVer(root);
+          const s = await apiFetch(apiBase + '/self').catch(() => null);
+          if (s && s.id) { selfNode = s; isNodeApi = true; }
+        }
+      }
+    }
 
     let nodes=[], senders=[], receivers=[], devices=[], flows=[];
     if (isNodeApi) {
@@ -380,20 +437,38 @@ async function doQuery(silent = false) {
           idx: parseInt(m1[3], 10)
         };
       }
-      // BCP-002-02: "Group Name:Role Name" — named string format
-      const m2 = raw.match(/^(.+?):(.+?)\s*(\d+)?$/);
-      if (m2) {
-        const role = m2[2].trim().toLowerCase();
-        // Map role names to short codes for consistent sorting
-        let roleCode = role;
-        if (role.startsWith('video')) roleCode = 'video';
-        else if (role.startsWith('audio')) roleCode = 'audio';
-        else if (role.startsWith('anc') || role.startsWith('data')) roleCode = 'anc';
+      // BCP-002-02: "Group Name:Role Name" — named string format.
+      // Split on the LAST colon so group names containing colons stay intact.
+      const ci = raw.lastIndexOf(':');
+      if (ci > 0) {
+        const groupPart = raw.slice(0, ci).trim();
+        let rolePart  = raw.slice(ci + 1).trim();
+        // Strip a leading "sender"/"receiver" word some vendors prepend
+        // (e.g. Telestream SPG: "sender Video1").
+        rolePart = rolePart.replace(/^(sender|receiver|tx|rx)\s+/i, '');
+        const roleLc = rolePart.toLowerCase();
+        // Detect format from the role string. Use 'includes' (not word
+        // boundaries) so a glued channel number like "Video1" still matches.
+        let roleCode = 'other';
+        if (/vid|video/.test(roleLc))                    roleCode = 'video';
+        else if (/aud|audio/.test(roleLc))               roleCode = 'audio';
+        else if (/anc|ancillary|data|meta/.test(roleLc)) roleCode = 'anc';
+        else if (roleLc[0] === 'v')                       roleCode = 'video';
+        else if (roleLc[0] === 'a')                       roleCode = 'audio';
+        else if (roleLc[0] === 'd' || roleLc[0] === 'm')  roleCode = 'anc';
+        // Pull the channel number — trailing digits, with or without a
+        // preceding space ("Video 1" or "Video1" both → 1).
+        const numM = rolePart.match(/(\d+)\s*$/);
+        const chan = numM ? parseInt(numM[1], 10) : 0;
+        // When the group is identical across all senders (single-group
+        // device like the SPG), the channel number is the real grouping key.
+        // Build a synthetic group so channels sort together: "SPG9000#01".
+        const groupKey = chan ? groupPart + '#' + String(chan).padStart(4, '0') : groupPart;
         return {
-          group: m2[1].trim(),
+          group: groupKey,
           nums: [],
           role: roleCode,
-          idx: m2[3] ? parseInt(m2[3], 10) : 1
+          idx: chan
         };
       }
       return null;
@@ -459,17 +534,33 @@ async function doQuery(silent = false) {
     );
     S.lastFetch = new Date(); S.apiBase = apiBase;
 
-    // Auto-open everything
-    S.open.clear();
-    nodes.forEach(n => S.open.add(n.id));
-    devices.forEach(d => { S.open.add(d.id); S.open.add('sg:'+d.id); S.open.add('rg:'+d.id); });
+    // Auto-open everything on first load only. On silent auto-refresh, preserve
+    // whatever the user has collapsed, but still reveal any newly-appeared resources.
+    if (!silent) {
+      S.open.clear();
+      nodes.forEach(n => S.open.add(n.id));
+      devices.forEach(d => { S.open.add(d.id); S.open.add('sg:'+d.id); S.open.add('rg:'+d.id); });
+    } else {
+      const known = S._seenIds || (S._seenIds = new Set());
+      nodes.forEach(n => { if (!known.has(n.id)) { S.open.add(n.id); known.add(n.id); } });
+      devices.forEach(d => {
+        if (!known.has(d.id)) {
+          S.open.add(d.id); S.open.add('sg:'+d.id); S.open.add('rg:'+d.id);
+          known.add(d.id);
+        }
+      });
+    }
+    // Track all current IDs so the next silent refresh knows what's "new"
+    if (!S._seenIds) S._seenIds = new Set();
+    nodes.forEach(n => S._seenIds.add(n.id));
+    devices.forEach(d => S._seenIds.add(d.id));
 
     setStatus('ok', isNodeApi ? 'NODE API' : 'QUERY API');
     updateChips(); renderTree(); renderDetail();
   } catch(err) {
     setStatus('error', 'ERROR'); chipsEl.style.display = 'none';
-    treeBody.innerHTML = '<div style="color:var(--amber);font-size:13px;padding:40px 20px;text-align:center;line-height:2;">⚠<br><span style="font-size:11px;color:var(--amber);">Could not connect</span><br><span style="color:var(--text2);font-size:9px;">' + (err.message||'Check the URL and try again') + '</span></div>';
-    detailPanel.innerHTML = '<div style="color:var(--amber);font-size:13px;padding:80px 20px;text-align:center;line-height:2;">⚠<br><span style="font-size:11px;">Could not connect</span><br><span style="color:var(--text2);font-size:9px;">' + (err.message||'Check the URL and try again') + '</span></div>';
+    treeBody.innerHTML = '<div style="color:var(--amber);font-size:13px;padding:40px 20px;text-align:center;line-height:2;">⚠<br><span style="font-size:11px;color:var(--amber);">Could not connect</span><br><span style="color:var(--text2);font-size:9px;">' + escapeHtml(err.message||'Check the URL and try again') + '</span></div>';
+    detailPanel.innerHTML = '<div style="color:var(--amber);font-size:13px;padding:80px 20px;text-align:center;line-height:2;">⚠<br><span style="font-size:11px;">Could not connect</span><br><span style="color:var(--text2);font-size:9px;">' + escapeHtml(err.message||'Check the URL and try again') + '</span></div>';
   } finally { btnQuery.disabled = false; }
 }
 
@@ -489,6 +580,71 @@ function updateChips() {
 }
 
 // ── DOM helpers — NO innerHTML, pure createElement ──
+// Escape any string before it goes into an innerHTML template (defends against
+// a malicious node label or error message injecting markup).
+function escapeHtml(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+// Build a Version cell that shows the raw NMOS "seconds:nanoseconds" value,
+// and on hover reveals the real wall-clock time. NMOS timestamps are TAI
+// (atomic time, no leap seconds), currently 37s ahead of UTC, so we subtract
+// 37 to get true UTC before formatting.
+const TAI_UTC_OFFSET = 37; // leap seconds as of 2017-01-01, stable since
+function mkVersionEl(version) {
+  if (!version) return '—';
+  const m = String(version).match(/^(\d+):(\d+)$/);
+  if (!m) return version; // not a timestamp — show as-is
+
+  const taiSecs = parseInt(m[1], 10);
+  const nanos   = parseInt(m[2], 10);
+  const utcMs   = (taiSecs - TAI_UTC_OFFSET) * 1000 + Math.round(nanos / 1e6);
+  const d = new Date(utcMs);
+
+  const span = document.createElement('span');
+  span.textContent = version;
+  span.style.cssText = 'cursor:help;';
+
+  if (isNaN(d.getTime())) { attachHelpTooltip(span, { title:'version', text:'Unrecognized timestamp format.' }); return span; }
+
+  // Human-readable strings
+  const local = d.toLocaleString(undefined, {
+    year:'numeric', month:'short', day:'numeric',
+    hour:'numeric', minute:'2-digit', second:'2-digit', timeZoneName:'short'
+  });
+  const utc = d.toISOString().replace('T', ' ').replace(/\.\d+Z$/, ' UTC');
+
+  // Relative time
+  const diffMs = Date.now() - utcMs;
+  const rel = relTime(diffMs);
+
+  const text =
+    'Local:  ' + local + '\n' +
+    'UTC:    ' + utc + '\n' +
+    'TAI:    ' + taiSecs + ' (+' + TAI_UTC_OFFSET + 's leap)\n' +
+    rel;
+
+  attachHelpTooltip(span, { title:'version timestamp', text });
+  return span;
+}
+
+function relTime(diffMs) {
+  const abs = Math.abs(diffMs);
+  const future = diffMs < 0;
+  const sec = Math.round(abs / 1000);
+  const min = Math.round(sec / 60);
+  const hr  = Math.round(min / 60);
+  const day = Math.round(hr / 24);
+  let s;
+  if (sec < 60)      s = sec + ' second' + (sec === 1 ? '' : 's');
+  else if (min < 60) s = min + ' minute' + (min === 1 ? '' : 's');
+  else if (hr < 24)  s = hr + ' hour'    + (hr === 1 ? '' : 's');
+  else               s = day + ' day'    + (day === 1 ? '' : 's');
+  return future ? 'in ' + s : s + ' ago';
+}
+
 function el(tag, cls, ...children) {
   const e = document.createElement(tag);
   if (cls) e.className = cls;
@@ -518,9 +674,26 @@ function renderTree() {
 
   nodes.forEach((node, ni) => {
     const nodeLabel = node.label || node.hostname || shortId(node.id);
-    if (q && !JSON.stringify(node).toLowerCase().includes(q)) return;
+    if (q) {
+      // Match against the node AND any of its devices/senders/receivers,
+      // since those live in separate arrays (not nested in the node object).
+      const nodeDevIds = new Set(devices.filter(d => d.node_id === node.id || nodes.length === 1).map(d => d.id));
+      const hay = JSON.stringify(node).toLowerCase()
+        + devices.filter(d => nodeDevIds.has(d.id)).map(d => (d.label||'')+(d.id||'')).join(' ').toLowerCase()
+        + senders.filter(s => nodeDevIds.has(s.device_id)).map(s => (s.label||'')+(s.id||'')).join(' ').toLowerCase()
+        + receivers.filter(r => nodeDevIds.has(r.device_id)).map(r => (r.label||'')+(r.id||'')).join(' ').toLowerCase();
+      if (!hay.includes(q)) return;
+    }
     const nodeOpen = S.open.has(node.id);
     const nodeSel  = S.sel.type === 'node' && S.sel.id === node.id;
+
+    // Devices belonging to THIS node. In single Node API mode, all devices
+    // belong to the one node (senders/receivers have no node_id in IS-04).
+    const multiNode = nodes.length > 1;
+    const nodeDevices = multiNode ? devices.filter(d => d.node_id === node.id) : devices.slice();
+    const nodeDevIdSet = new Set(nodeDevices.map(d => d.id));
+    const nodeSenders   = multiNode ? senders.filter(s => nodeDevIdSet.has(s.device_id))   : senders;
+    const nodeReceivers = multiNode ? receivers.filter(r => nodeDevIdSet.has(r.device_id)) : receivers;
 
     // ── NODE ROW ──
     const nodeRow = mkRow('row-node', node.id, 'node', 'toggle', nodeOpen, nodeSel);
@@ -529,21 +702,21 @@ function renderTree() {
     const nLbl = txt('span', 'n-lbl', nodeLabel);
     nLbl.title = nodeLabel;
     nodeRow.appendChild(nLbl);
-    nodeRow.appendChild(txt('span', 'n-cnt', devices.length + 'd · ' + senders.length + 's · ' + receivers.length + 'r'));
+    nodeRow.appendChild(txt('span', 'n-cnt', nodeDevices.length + 'd · ' + nodeSenders.length + 's · ' + nodeReceivers.length + 'r'));
     frag.appendChild(nodeRow);
 
     if (!nodeOpen) return;
 
-    // Build device→children map
+    // Build device→children map (scoped to this node)
     const devMap = {};
-    devices.forEach(d => { devMap[d.id] = { dev: d, senders: [], receivers: [] }; });
-    senders.forEach(s => { if (devMap[s.device_id]) devMap[s.device_id].senders.push(s); });
-    receivers.forEach(r => { if (devMap[r.device_id]) devMap[r.device_id].receivers.push(r); });
-    const knownDevIds = new Set(devices.map(d => d.id));
-    const orphanS = senders.filter(s => !knownDevIds.has(s.device_id));
-    const orphanR = receivers.filter(r => !knownDevIds.has(r.device_id));
+    nodeDevices.forEach(d => { devMap[d.id] = { dev: d, senders: [], receivers: [] }; });
+    nodeSenders.forEach(s => { if (devMap[s.device_id]) devMap[s.device_id].senders.push(s); });
+    nodeReceivers.forEach(r => { if (devMap[r.device_id]) devMap[r.device_id].receivers.push(r); });
+    const knownDevIds = new Set(nodeDevices.map(d => d.id));
+    const orphanS = nodeSenders.filter(s => !knownDevIds.has(s.device_id));
+    const orphanR = nodeReceivers.filter(r => !knownDevIds.has(r.device_id));
 
-    devices.forEach(dev => {
+    nodeDevices.forEach(dev => {
       const entry   = devMap[dev.id];
       const devOpen = S.open.has(dev.id);
       const devSel  = S.sel.type === 'device' && S.sel.id === dev.id;
@@ -1136,7 +1309,7 @@ function showHelpTooltip(targetEl, help) {
   title.style.cssText = 'color:var(--blue);font-weight:700;margin-bottom:5px;font-family:var(--mono);font-size:10px;letter-spacing:.02em;';
   title.textContent = help.title;
   const body = document.createElement('div');
-  body.style.cssText = 'color:var(--text1);font-size:11px;';
+  body.style.cssText = 'color:var(--text1);font-size:11px;white-space:pre-wrap;';
   body.textContent = help.text;
   helpTooltipEl.appendChild(title);
   helpTooltipEl.appendChild(body);
@@ -1277,10 +1450,9 @@ function decodeGrouphint(tags) {
 }
 function mkSortBtn(key, items) {
   const GROUPHINT = 'urn:x-nmos:tag:grouphint/v1.0';
-  const btn = document.createElement('span');
   const sorted = S.sortMode[key] !== 'api';
 
-  // Detect which BCP version is in use by checking the format of the first grouphint
+  // Detect which BCP version is in use by checking the first grouphint tag
   let bcpVersion = null;
   if (items && items.length) {
     for (const x of items) {
@@ -1292,14 +1464,27 @@ function mkSortBtn(key, items) {
     }
   }
 
-  let sortLabel = '[sorted: API]';
-  if (sorted) sortLabel = bcpVersion ? '[sorted: ' + bcpVersion + ']' : '[sorted: Label]';
+  // The value shown in the right half of the toggle
+  let valueText;
+  if (!sorted) valueText = 'API order';
+  else valueText = bcpVersion || 'Label';
 
-  btn.textContent = sortLabel;
+  // Split toggle: "sort" label fused to a colored value.
+  const btn = document.createElement('span');
+  btn.className = 'sort-toggle';
+  const lbl = document.createElement('span');
+  lbl.className = 'sort-toggle-lbl';
+  lbl.textContent = 'sort';
+  const val = document.createElement('span');
+  val.className = 'sort-toggle-val' + (sorted ? ' on' : ' api');
+  val.textContent = valueText;
+  btn.appendChild(lbl);
+  btn.appendChild(val);
+
   btn.title = sorted
     ? `Sorted by ${bcpVersion ? 'grouphint tag (' + bcpVersion + ')' : 'label (no grouphint found)'} — click for API order`
     : 'Showing raw API order — click for sorted order';
-  btn.style.cssText = `font-family:var(--mono);font-size:10px;font-weight:400;cursor:pointer;flex-shrink:0;color:${sorted ? 'var(--text3)' : 'var(--text1)'};margin-left:6px;`;
+
   btn.addEventListener('click', e => {
     e.stopPropagation();
     S.sortMode[key] = S.sortMode[key] !== 'api' ? 'api' : 'sorted';
@@ -1379,7 +1564,7 @@ function dNode(n) {
   hrefLink.href = n.href || ''; hrefLink.target = '_blank'; hrefLink.textContent = n.href || '—';
   db.appendChild(section('Node info', null, kvTable([
     ['ID', n.id || '—'], ['Label', n.label || '—'], ['Description', n.description || '—'],
-    ['Hostname', n.hostname || '—'], ['API versions', verEl], ['href', hrefLink], ['Version', n.version || '—'],
+    ['Hostname', n.hostname || '—'], ['API versions', verEl], ['href', hrefLink], ['Version', mkVersionEl(n.version)],
   ])));
 
   // Clocks
@@ -1455,7 +1640,7 @@ function dDevice(d) {
   const nodeClickEl = node ? (() => { const s = txt('span', 'clickable', node.label || node.hostname || d.node_id); s.dataset.nav = 'node:' + node.id; s.style.color = 'var(--text1)'; return s; })() : (d.node_id || '—');
   db.appendChild(section('Device info', null, kvTable([
     ['ID', d.id || '—'], ['Label', d.label || '—'], ['Description', d.description || '—'],
-    ['Type', d.type || '—'], ['Node', nodeClickEl], ['Version', d.version || '—'],
+    ['Type', d.type || '—'], ['Node', nodeClickEl], ['Version', mkVersionEl(d.version)],
   ])));
 
   if (ds.length) {
@@ -1563,6 +1748,8 @@ function dSender(s) {
         sRows.push([k, resolveUuid(v, 'flow')]);
       } else if (k === 'subscription' && S.lookup && v && v.receiver_id) {
         sRows.push([k, resolveUuid(v.receiver_id, 'receiver')]);
+      } else if (k === 'version') {
+        sRows.push([k, mkVersionEl(v)]);
       } else if (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') sRows.push([k, String(v)]);
       else if (v === null) sRows.push([k, 'null']);
       else sRows.push([k, JSON.stringify(v)]);
@@ -1591,6 +1778,8 @@ function dSender(s) {
         } else {
           sRows.push([key, (sub.active ? 'Active' : 'Inactive') + (sub.receiver_id ? ' · receiver ' + sub.receiver_id : ' · no receiver')]);
         }
+      } else if (k === 'version') {
+        sRows.push([key, mkVersionEl(s.version)]);
       } else {
         sRows.push([key, s[k]||'—']);
       }
@@ -1787,7 +1976,9 @@ function dReceiver(r) {
       const verRes = await fetch(origin + '/x-nmos/connection/');
       if (verRes.ok) {
         const vers = await verRes.json();
-        const sorted = vers.map(v => v.replace(/\/$/, '')).sort().reverse();
+        const sorted = vers.map(v => v.replace(/\/$/, '')).sort((a, b) =>
+          a.localeCompare(b, undefined, { numeric: true })
+        ).reverse();
         if (sorted.length) {
           urls.unshift(origin + '/x-nmos/connection/' + sorted[0] + '/single/receivers/' + r.id + '/active');
         }
@@ -1910,6 +2101,8 @@ function dReceiver(r) {
         rRows.push([k, resolveUuid(v, 'device')]);
       } else if (k === 'subscription' && S.lookup && v && v.sender_id) {
         rRows.push([k, resolveUuid(v.sender_id, 'sender')]);
+      } else if (k === 'version') {
+        rRows.push([k, mkVersionEl(v)]);
       } else if (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') rRows.push([k, String(v)]);
       else if (v === null) rRows.push([k, 'null']);
       else rRows.push([k, JSON.stringify(v)]);
@@ -1936,6 +2129,8 @@ function dReceiver(r) {
         } else {
           rRows.push([key, (sub.active ? 'Active' : 'Inactive') + (sub.sender_id ? ' · sender ' + sub.sender_id : ' · no sender')]);
         }
+      } else if (k === 'version') {
+        rRows.push([key, mkVersionEl(r.version)]);
       } else {
         rRows.push([key, r[k]||'—']);
       }
