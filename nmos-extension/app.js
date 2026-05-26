@@ -1190,6 +1190,8 @@ const FIELD_HELP = {
   'services':        { title:'services', text:'Extra services this Node offers beyond the standard NMOS APIs.' },
   'clocks':          { title:'clocks', text:'The timing references this Node uses — usually PTP (Precision Time Protocol). PTP keeps everything synchronized in IP video systems and is required for ST 2110.' },
   'interfaces':      { title:'interfaces', text:'Network ports on this Node, with their MAC addresses and what they\'re connected to.' },
+  'chassis_id':      { title:'chassis_id', text:'The MAC address identifying this Node\'s network chassis (from LLDP). Same across all its ports.' },
+  'port_id':         { title:'port_id', text:'The MAC address of this specific network port (from LLDP). Unique per interface — useful for tracing exactly which cable/port a stream uses.' },
 
   // Device specifics
   'type':            { title:'type', text:'What category of device this is. Common types: "pipeline" (signal processing), "generic" (general purpose), "proxy" (gateway to non-NMOS equipment).' },
@@ -1531,6 +1533,7 @@ function mkDetailBadge(word, color, bgColor, fontSize) {
 function dNode(n) {
   if (!n) return;
   const clocks   = n.clocks || [];
+  const interfaces = n.interfaces || [];
   const endpoints= (n.api && n.api.endpoints) || [];
   const versions = (n.api && n.api.versions) || [];
   const devs = S.data.devices;
@@ -1567,18 +1570,60 @@ function dNode(n) {
     ['Hostname', n.hostname || '—'], ['API versions', verEl], ['href', hrefLink], ['Version', mkVersionEl(n.version)],
   ])));
 
+  // Asset info — BCP-002-04 asset distinguishing tags (manufacturer, product, serial)
+  const tags = n.tags || {};
+  const assetRows = [];
+  const assetMap = [
+    ['urn:x-nmos:tag:asset:manufacturer/v1.0', 'Manufacturer'],
+    ['urn:x-nmos:tag:asset:product/v1.0',      'Product'],
+    ['urn:x-nmos:tag:asset:instance-id/v1.0',  'Serial / Instance ID'],
+    ['urn:x-nmos:tag:asset:model/v1.0',        'Model'],
+    ['urn:x-nmos:tag:asset:function/v1.0',     'Function'],
+  ];
+  assetMap.forEach(([urn, label]) => {
+    const val = tags[urn];
+    if (Array.isArray(val) && val.length) assetRows.push([label, val.join(', ')]);
+  });
+  if (assetRows.length) {
+    db.appendChild(section('Asset', null, kvTable(assetRows)));
+  }
+
   // Clocks
   if (clocks.length) {
     const ct = el('table', 'kv');
     clocks.forEach(c => {
       const valEl = el('span', '');
       valEl.appendChild(badge(c.ref_type === 'ptp' ? 'b-ptp' : 'b-inactive', c.ref_type || 'internal'));
-      valEl.appendChild(document.createTextNode(' '));
-      valEl.appendChild(badge(c.traceable ? 'b-active' : 'b-inactive', c.traceable ? 'traceable' : 'not traceable'));
+      // Traceability only applies to PTP clocks, not internal ones
+      if (c.ref_type === 'ptp') {
+        valEl.appendChild(document.createTextNode(' '));
+        valEl.appendChild(badge(c.traceable ? 'b-active' : 'b-inactive', c.traceable ? 'traceable' : 'not traceable'));
+      }
       if (c.gmid) { const g = txt('span', '', ' GM: ' + c.gmid); g.style.color = 'var(--text2)'; g.style.fontSize = '11px'; valEl.appendChild(g); }
       ct.appendChild(kvRow(c.name || '', valEl));
     });
     db.appendChild(section('Clocks', null, ct));
+  }
+
+  // Interfaces — physical NICs with LLDP chassis/port IDs (for cable tracing)
+  if (interfaces.length) {
+    const it = el('table', 'kv');
+    interfaces.forEach(i => {
+      const valEl = el('span', '');
+      const parts = [];
+      if (i.chassis_id) parts.push('chassis ' + i.chassis_id);
+      if (i.port_id)    parts.push('port ' + i.port_id);
+      if (i.attached_network_device && i.attached_network_device.chassis_id) {
+        parts.push('→ switch ' + i.attached_network_device.chassis_id +
+          (i.attached_network_device.port_id ? ' port ' + i.attached_network_device.port_id : ''));
+      }
+      valEl.textContent = parts.join('  ·  ') || '—';
+      valEl.style.fontSize = '11px';
+      valEl.style.color = 'var(--text2)';
+      valEl.style.fontFamily = 'var(--mono)';
+      it.appendChild(kvRow(i.name || '', valEl));
+    });
+    db.appendChild(section('Interfaces', interfaces.length, it));
   }
 
   // Devices list
