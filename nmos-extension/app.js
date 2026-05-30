@@ -12,6 +12,10 @@ const S = {
   sortMode: {}, // keyed by 'sg:{devId}' or 'rg:{devId}' → 'sorted' | 'api'
   jsonKeys: false, // toggle between friendly labels and raw JSON keys
   lookup: false, // toggle UUID resolution to human labels
+  rxSubscribedOnly: false, // show only subscribed (active) receivers in tree
+  rxIs05Cache: {}, // receiverId → full IS-05 active object (populated async after query)
+  sndIs05Cache: {}, // senderId → full IS-05 active object (populated async after query)
+  rxIs05Minimized: {}, // receiverId → true if user has minimized the IS-05 box
 };
 
 // ── DOM refs ──
@@ -93,8 +97,8 @@ async function renderBookmarks() {
       ipInput.value = bm.url;
       bookmarksPanel.style.display = 'none';
       // clear tree and detail so user knows something is happening
-      treeBody.innerHTML = '<div style="color:var(--text1);font-size:13px;padding:40px 20px;text-align:center;line-height:2;">⏳<br><span style="font-size:11px;color:var(--text2);">Connecting to ' + escapeHtml(bm.name) + '…</span></div>';
-      detailPanel.innerHTML = '<div style="color:var(--text1);font-size:13px;padding:80px 20px;text-align:center;line-height:2;">⏳<br><span style="font-size:11px;color:var(--text2);">Connecting…</span></div>';
+      treeBody.innerHTML = '<div class="loading-skeleton"><div class="skeleton-line sk-w60"></div><div class="skeleton-line sk-w80"></div><div class="skeleton-line sk-w40"></div><div class="skeleton-line sk-w70"></div></div>';
+      detailPanel.innerHTML = '<div class="loading-skeleton" style="padding:40px 20px;"><div class="skeleton-line sk-w90" style="height:24px;margin-bottom:16px;"></div><div class="skeleton-line sk-w60"></div><div class="skeleton-line sk-w80"></div><div class="skeleton-line sk-w50"></div></div>';
       doQuery();
     });
 
@@ -195,10 +199,14 @@ if (urlParam) ipInput.value = urlParam;
     try { chrome.storage.local.set({ treeWidth: treePanel.offsetWidth }); } catch(e) {}
   });
 
-  // Restore saved width
+  // Restore saved width. One-time bump: older builds defaulted to ~400px which
+  // clips the full receiver UUID, so nudge any narrow saved width up to 550.
   try {
     chrome.storage.local.get('treeWidth', function(data) {
-      if (data && data.treeWidth) treePanel.style.width = data.treeWidth + 'px';
+      if (data && data.treeWidth) {
+        const w = data.treeWidth <= 450 ? 550 : data.treeWidth;
+        treePanel.style.width = w + 'px';
+      }
     });
   } catch(e) {}
 })();
@@ -231,6 +239,15 @@ toggleDevBtn.addEventListener('click', () => {
   }
   renderTree();
 });
+const toggleSubBtn = document.getElementById('toggle-subscribed-btn');
+toggleSubBtn.addEventListener('click', () => {
+  S.rxSubscribedOnly = !S.rxSubscribedOnly;
+  toggleSubBtn.textContent = S.rxSubscribedOnly ? '⊙ All Rx' : '⊙ Subscribed';
+  toggleSubBtn.title = S.rxSubscribedOnly ? 'Show all receivers' : 'Show only subscribed receivers';
+  toggleSubBtn.classList.toggle('active-filter', S.rxSubscribedOnly);
+  renderTree();
+});
+
 btnAuto.addEventListener('click', () => {
   if (S.autoTimer) {
     clearInterval(S.autoTimer); S.autoTimer = null;
@@ -340,8 +357,8 @@ async function doQuery(silent = false) {
   // Only clear UI on manual connects — not on auto-refresh
   if (!silent) {
     S.data = { nodes:[], devices:[], senders:[], receivers:[], flows:[] };
-    treeBody.innerHTML = '<div style="color:var(--text1);font-size:13px;padding:40px 20px;text-align:center;line-height:2;">⏳<br><span style="font-size:11px;color:var(--text2);">Connecting…</span></div>';
-    detailPanel.innerHTML = '<div style="color:var(--text1);font-size:13px;padding:80px 20px;text-align:center;line-height:2;">⏳<br><span style="font-size:11px;color:var(--text2);">Connecting…</span></div>';
+    treeBody.innerHTML = '<div class="loading-skeleton"><div class="skeleton-line sk-w60"></div><div class="skeleton-line sk-w80"></div><div class="skeleton-line sk-w40"></div><div class="skeleton-line sk-w70"></div><div class="skeleton-line sk-w55"></div><div class="skeleton-line sk-w80"></div><div class="skeleton-line sk-w45"></div></div>';
+    detailPanel.innerHTML = '<div class="loading-skeleton" style="padding:40px 20px;"><div class="skeleton-line sk-w90" style="height:24px;margin-bottom:16px;"></div><div class="skeleton-line sk-w60"></div><div class="skeleton-line sk-w80"></div><div class="skeleton-line sk-w50"></div><div class="skeleton-line sk-w70"></div><div class="skeleton-line sk-w40"></div></div>';
   }
 
   try {
@@ -450,15 +467,35 @@ async function doQuery(silent = false) {
         // Detect format from the role string. Use 'includes' (not word
         // boundaries) so a glued channel number like "Video1" still matches.
         let roleCode = 'other';
-        if (/vid|video/.test(roleLc))                    roleCode = 'video';
-        else if (/aud|audio/.test(roleLc))               roleCode = 'audio';
-        else if (/anc|ancillary|data|meta/.test(roleLc)) roleCode = 'anc';
-        else if (roleLc[0] === 'v')                       roleCode = 'video';
-        else if (roleLc[0] === 'a')                       roleCode = 'audio';
-        else if (roleLc[0] === 'd' || roleLc[0] === 'm')  roleCode = 'anc';
-        // Pull the channel number — trailing digits, with or without a
-        // preceding space ("Video 1" or "Video1" both → 1).
-        const numM = rolePart.match(/(\d+)\s*$/);
+        // Highest-priority signal: SMPTE ST 2110 sub-part suffix in the role/label.
+        //   -20 = uncompressed video, -22 = JPEG-XS video,
+        //   -30/-31 = PCM/AES3 audio, -40 = ancillary/metadata.
+        // Some vendors (e.g. MediaLinks) put the full label as the role string,
+        // e.g. "MPU1 S1 ST2110-20 Sender", so keyword checks below would miss it.
+        const smpte = roleLc.match(/2110-(\d+)/);
+        if (smpte) {
+          const sub = parseInt(smpte[1], 10);
+          if (sub === 20 || sub === 22)        roleCode = 'video';
+          else if (sub === 30 || sub === 31)   roleCode = 'audio';
+          else if (sub === 40)                 roleCode = 'anc';
+        }
+        // Vendor audio shorthand "3x" (MediaLinks) → audio.
+        if (roleCode === 'other' && /\b3x\b|-3x/.test(roleLc)) roleCode = 'audio';
+        if (roleCode === 'other') {
+          if (/vid|video/.test(roleLc))                    roleCode = 'video';
+          else if (/aud|audio/.test(roleLc))               roleCode = 'audio';
+          else if (/anc|ancillary|data|meta/.test(roleLc)) roleCode = 'anc';
+          else if (roleLc[0] === 'v')                       roleCode = 'video';
+          else if (roleLc[0] === 'a')                       roleCode = 'audio';
+          else if (roleLc[0] === 'd' || roleLc[0] === 'm')  roleCode = 'anc';
+        }
+        // Channel number for grouping/index. For clean vendor roles like
+        // "Video 1" this groups V1+A1+D1 together. But when the role string is a
+        // full label (SMPTE-suffix vendors like MediaLinks), trailing digits are
+        // spurious ("Sender1", the "20" in "ST2110-20"), so skip channel grouping
+        // — the group name itself is the real key.
+        const fullLabelRole = !!smpte || /\bsender\b|\breceiver\b/.test(roleLc);
+        const numM = fullLabelRole ? null : rolePart.match(/(\d+)\s*$/);
         const chan = numM ? parseInt(numM[1], 10) : 0;
         // When the group is identical across all senders (single-group
         // device like the SPG), the channel number is the real grouping key.
@@ -557,6 +594,81 @@ async function doQuery(silent = false) {
 
     setStatus('ok', isNodeApi ? 'NODE API' : 'QUERY API');
     updateChips(); renderTree(); renderDetail();
+
+    // Background-fetch IS-05 active connection for all active receivers to get multicast IPs
+    S.rxIs05Cache = {};
+    S.sndIs05Cache = {};
+    S.rxIs05Minimized = {};
+    const mcastQueryId = (S._mcastQueryId = (S._mcastQueryId || 0) + 1);
+    (async () => {
+      const urlObj = new URL(S.apiBase);
+      const origin = urlObj.protocol + '//' + urlObj.host;
+      // detect highest connection API version once
+      let connVer = 'v1.1';
+      try {
+        const vr = await fetch(origin + '/x-nmos/connection/');
+        if (vr.ok) {
+          const vs = await vr.json();
+          const sorted = vs.map(v => v.replace(/\/$/, '')).sort((a,b) => a.localeCompare(b,undefined,{numeric:true})).reverse();
+          if (sorted.length) connVer = sorted[0];
+        }
+      } catch(e) {}
+      const activeRx = (S.data.receivers || []).filter(r => r.subscription && r.subscription.active);
+
+      // Debounced renderTree — wait 300ms after last result before re-rendering
+      let renderTimer = null;
+      const debouncedRender = () => {
+        if (renderTimer) clearTimeout(renderTimer);
+        renderTimer = setTimeout(() => { renderTimer = null; renderTree(); }, 300);
+      };
+
+      // fetch in small parallel batches to avoid flooding the device
+      const BATCH = 6;
+      for (let i = 0; i < activeRx.length; i += BATCH) {
+        const batch = activeRx.slice(i, i + BATCH);
+        await Promise.all(batch.map(async r => {
+          try {
+            const url = origin + '/x-nmos/connection/' + connVer + '/single/receivers/' + r.id + '/active';
+            const res = await fetch(url);
+            if (!res.ok) return;
+            const d = await res.json();
+            if (d.transport_params && d.transport_params[0] && d.transport_params[0].multicast_ip) {
+              if (S._mcastQueryId !== mcastQueryId) return; // new query fired, discard
+              S.rxIs05Cache[r.id] = d;
+              debouncedRender();
+            }
+          } catch(e) {}
+        }));
+      }
+
+      // Fetch IS-05 active for ALL senders (active or not) — senders have a
+      // configured multicast address even when idle.
+      const allSnd = S.data.senders || [];
+      for (let i = 0; i < allSnd.length; i += BATCH) {
+        const batch = allSnd.slice(i, i + BATCH);
+        await Promise.all(batch.map(async s => {
+          try {
+            const url = origin + '/x-nmos/connection/' + connVer + '/single/senders/' + s.id + '/active';
+            const res = await fetch(url);
+            if (!res.ok) return;
+            const d = await res.json();
+            const sIp = d.transport_params && d.transport_params[0] &&
+                        (d.transport_params[0].destination_ip || d.transport_params[0].multicast_ip);
+            if (sIp) {
+              if (S._mcastQueryId !== mcastQueryId) return;
+              S.sndIs05Cache[s.id] = d;
+              debouncedRender();
+            }
+          } catch(e) {}
+        }));
+      }
+
+      // Final render once all batches done
+      if (S._mcastQueryId === mcastQueryId) {
+        if (renderTimer) { clearTimeout(renderTimer); renderTimer = null; }
+        renderTree();
+      }
+    })();
   } catch(err) {
     setStatus('error', 'ERROR'); chipsEl.style.display = 'none';
     treeBody.innerHTML = '<div style="color:var(--amber);font-size:13px;padding:40px 20px;text-align:center;line-height:2;">⚠<br><span style="font-size:11px;color:var(--amber);">Could not connect</span><br><span style="color:var(--text2);font-size:9px;">' + escapeHtml(err.message||'Check the URL and try again') + '</span></div>';
@@ -658,6 +770,66 @@ function txt(tag, cls, text) {
   return e;
 }
 function span(cls, text) { return txt('span', cls, text); }
+
+
+// ── Inline format summary for tree leaf rows ──
+function mkFmtSummary(flow, fmt) {
+  if (!flow) {
+    const ph = document.createElement('span');
+    ph.className = 'fmt-summary fmt-summary-empty';
+    return ph;
+  }
+  let text = '';
+  if (fmt === 'video' && flow.frame_width && flow.frame_height) {
+    const h = flow.frame_height;
+    let fps = '';
+    if (flow.grain_rate) {
+      const n = flow.grain_rate.numerator;
+      const d = flow.grain_rate.denominator || 1;
+      fps = (d === 1001 && n === 60000) ? '59.94' :
+            (d === 1001 && n === 30000) ? '29.97' :
+            (d === 1001 && n === 24000) ? '23.98' :
+            (d === 1001) ? (n/d).toFixed(2) : String(n/d);
+    }
+    text = h + (fps ? 'p' + fps : 'p');
+  } else if (fmt === 'audio' && flow.sample_rate) {
+    const sr = flow.sample_rate.numerator || flow.sample_rate;
+    const khz = (typeof sr === 'number' && sr >= 1000) ? (sr/1000) + 'kHz' : sr + 'Hz';
+    const ch = flow.channels ? flow.channels.length + 'ch' : '';
+    text = khz + (ch ? ' ' + ch : '');
+  }
+  if (!text) {
+    const ph = document.createElement('span');
+    ph.className = 'fmt-summary fmt-summary-empty';
+    return ph;
+  }
+  const el2 = document.createElement('span');
+  el2.className = 'fmt-summary';
+  el2.textContent = text;
+  return el2;
+}
+
+// ── Inline route target for tree leaf rows ──
+function mkRouteTarget(resource, isSender) {
+  const sub = resource.subscription;
+  if (!sub || !sub.active) return null;
+  const targetId = isSender ? sub.receiver_id : sub.sender_id;
+  if (!targetId) return null;
+  // Find the target resource to get its label
+  let label = '';
+  if (isSender) {
+    const rx = S.data.receivers.find(r => r.id === targetId);
+    label = rx ? (rx.label || shortId(targetId)) : shortId(targetId);
+  } else {
+    const tx = S.data.senders.find(s => s.id === targetId);
+    label = tx ? (tx.label || shortId(targetId)) : shortId(targetId);
+  }
+  const el2 = document.createElement('span');
+  el2.className = 'route-target';
+  el2.textContent = (isSender ? '→ ' : '← ') + label;
+  el2.title = targetId;
+  return el2;
+}
 
 // ── TREE RENDER ──
 function renderTree() {
@@ -761,6 +933,10 @@ function renderTree() {
             const leaf = mkRow('row-leaf' + selCls, s.id, 'sender', 'select', false, false);
             leaf.appendChild(span('dot ' + (active ? 'dot-on-'+fmt : 'dot-off-'+fmt), ''));
             const sLbl=txt('span','l-lbl',s.label||shortId(s.id));sLbl.title=s.label||s.id;leaf.appendChild(sLbl);
+            appendMcast(leaf, s.id, 'sender');
+            // Inline format summary
+            const fmtSummary = mkFmtSummary(flow, fmt);
+            if (fmtSummary) leaf.appendChild(fmtSummary);
             const sbadges = document.createElement('div');
             sbadges.className = 'leaf-badges';
             if (fmt) { const rb = txt('span', 'rb rb-' + fmt, formatLabel(fmt)); if (!active) rb.style.opacity='0.4'; sbadges.appendChild(rb); }
@@ -772,21 +948,24 @@ function renderTree() {
       }
 
       // ── RECEIVERS FOLDER ──
-      if (entry.receivers.length) {
+      const filteredDevReceivers = S.rxSubscribedOnly
+        ? entry.receivers.filter(r => !!(r.subscription && r.subscription.active))
+        : entry.receivers;
+      if (filteredDevReceivers.length) {
         const rf = mkRow('row-folder', rgKey, 'folder', 'toggle', rgOpen, false);
         rf.appendChild(span('f-chev' + (rgOpen ? ' open' : ''), '▶'));
         rf.appendChild(mkFolderIcon(false));
         rf.appendChild(txt('span', 'f-lbl', 'Receivers'));
-        rf.appendChild(mkSortBtn(rgKey, entry.receivers));
+        rf.appendChild(mkSortBtn(rgKey, filteredDevReceivers));
         rf.appendChild(el('span','f-spc'));
         rf.appendChild(mkFolderApiBtn('receivers'));
-        rf.appendChild(txt('span', 'f-cnt', String(entry.receivers.length)));
+        rf.appendChild(txt('span', 'f-cnt', String(filteredDevReceivers.length)));
         frag.appendChild(rf);
 
         if (rgOpen) {
           const receiverList = S.sortMode[rgKey] === 'api'
-            ? (S.data.receiversApiOrder || entry.receivers).filter(r => r.device_id === dev.id)
-            : entry.receivers;
+            ? (S.data.receiversApiOrder || filteredDevReceivers).filter(r => r.device_id === dev.id && (!S.rxSubscribedOnly || !!(r.subscription && r.subscription.active)))
+            : filteredDevReceivers;
           receiverList.forEach(r => {
             const fmt    = formatType(r.format || '');
             const active = !!(r.subscription && r.subscription.active);
@@ -794,6 +973,9 @@ function renderTree() {
             const leaf = mkRow('row-leaf' + selCls, r.id, 'receiver', 'select', false, false);
             leaf.appendChild(span('dot ' + (active ? 'dot-on-'+fmt : 'dot-off-'+fmt), ''));
             const rLbl=txt('span','l-lbl',r.label||shortId(r.id));rLbl.title=r.label||r.id;leaf.appendChild(rLbl);
+            appendMcast(leaf, r.id, 'receiver');
+            const rFmt = mkFmtSummary(null, fmt);
+            if (rFmt) leaf.appendChild(rFmt);
             const rbadges = document.createElement('div');
             rbadges.className = 'leaf-badges';
             if (fmt) { const rb = txt('span', 'rb rb-' + fmt, formatLabel(fmt)); if (!active) rb.style.opacity='0.4'; rbadges.appendChild(rb); }
@@ -826,34 +1008,42 @@ function renderTree() {
           const leaf=mkRow('row-leaf'+selCls,s.id,'sender','select',false,false);
           leaf.appendChild(span('dot '+(active?'dot-on-'+fmt:'dot-off-'+fmt),''));
           const sLbl2=txt('span','l-lbl',s.label||shortId(s.id));sLbl2.title=s.label||s.id;leaf.appendChild(sLbl2);
+          appendMcast(leaf, s.id, 'sender');
+          const fmtSummary2 = mkFmtSummary(flow, fmt);
+          if (fmtSummary2) leaf.appendChild(fmtSummary2);
           const sbadges2=document.createElement('div');sbadges2.className='leaf-badges';
           if(fmt){const rb2=txt('span','rb rb-'+fmt,formatLabel(fmt));if(!active)rb2.style.opacity='0.25';sbadges2.appendChild(rb2);}
-          sbadges2.appendChild(mkDirBadge(true,active,fmt));leaf.appendChild(sbadges2);
+          sbadges2.appendChild(mkDirBadge(true,active,fmt));
+          leaf.appendChild(sbadges2);
           frag.appendChild(leaf);
         });
       }
     }
 
     // Orphan receivers
-    if (orphanR.length) {
+    const filteredOrphanR = S.rxSubscribedOnly ? orphanR.filter(r => !!(r.subscription && r.subscription.active)) : orphanR;
+    if (filteredOrphanR.length) {
       const orgKey = 'rg:orphan:' + node.id;
       const orgOpen = S.open.has(orgKey);
       const orf = mkRow('row-folder', orgKey, 'folder', 'toggle', orgOpen, false);
       orf.appendChild(span('f-chev' + (orgOpen ? ' open' : ''), '▶'));
       orf.appendChild(mkFolderIcon(false));
       orf.appendChild(txt('span', 'f-lbl', 'Receivers'));
-      orf.appendChild(mkSortBtn(orgKey, orphanR));
+      orf.appendChild(mkSortBtn(orgKey, filteredOrphanR));
       orf.appendChild(el('span', 'f-spc'));
       orf.appendChild(mkFolderApiBtn('receivers'));
-      orf.appendChild(txt('span', 'f-cnt', String(orphanR.length)));
+      orf.appendChild(txt('span', 'f-cnt', String(filteredOrphanR.length)));
       frag.appendChild(orf);
       if (orgOpen) {
-        orphanR.forEach(r => {
+        filteredOrphanR.forEach(r => {
           const fmt=formatType(r.format||''); const active=!!(r.subscription&&r.subscription.active);
           const selCls=S.sel.type==='receiver'&&S.sel.id===r.id?' sel-leaf sel-'+(fmt||'mux'):'';
           const leaf=mkRow('row-leaf'+selCls,r.id,'receiver','select',false,false);
           leaf.appendChild(span('dot '+(active?'dot-on-'+fmt:'dot-off-'+fmt),''));
           const rLbl2=txt('span','l-lbl',r.label||shortId(r.id));rLbl2.title=r.label||r.id;leaf.appendChild(rLbl2);
+          appendMcast(leaf, r.id, 'receiver');
+          const rFmt2 = mkFmtSummary(null, fmt);
+          if (rFmt2) leaf.appendChild(rFmt2);
           const rbadges2=document.createElement('div');rbadges2.className='leaf-badges';
           if(fmt){const rb3=txt('span','rb rb-'+fmt,formatLabel(fmt));if(!active)rb3.style.opacity='0.25';rbadges2.appendChild(rb3);}
           rbadges2.appendChild(mkDirBadge(false,active,fmt));leaf.appendChild(rbadges2);
@@ -940,10 +1130,10 @@ function mkFolderIcon(isSender) {
   const color    = '#e06090';
   const dimColor = '#2e1020';
   const ns = 'http://www.w3.org/2000/svg';
-  const S = 18;
+  const SZ = 18;
 
   const svg = document.createElementNS(ns, 'svg');
-  svg.setAttribute('width', S); svg.setAttribute('height', S);
+  svg.setAttribute('width', SZ); svg.setAttribute('height', SZ);
   svg.setAttribute('viewBox', '0 0 18 18');
 
   const bg = document.createElementNS(ns, 'rect');
@@ -1095,6 +1285,15 @@ function navLink(type, id, label, color) {
 
 function badge(cls, text) { return txt('span', 'badge ' + cls, text); }
 
+// Status badge with a leading dot — active = filled glowing dot, idle = hollow.
+// Used on sender/receiver cards so the indicator reads as a state, not a control.
+function statusBadge(active, label) {
+  const b = el('span', 'badge ' + (active ? 'b-active' : 'b-inactive') + ' badge-status');
+  b.appendChild(el('span', 'badge-dot' + (active ? '' : ' badge-dot-idle')));
+  b.appendChild(document.createTextNode(label));
+  return b;
+}
+
 function kvRow(key, valueEl) {
   const tr = document.createElement('tr');
   tr.appendChild(txt('td', 'kk', key));
@@ -1238,21 +1437,21 @@ function mkLookupToggle() {
 
 // Returns a DOM element showing "label uuid_short" if lookup ON, else plain UUID
 function resolveUuid(uuid, type) {
-  if (!uuid) return '—';
-  if (!S.lookup) return uuid;
+  if (!uuid) return document.createTextNode('—');
+  if (!S.lookup) return document.createTextNode(uuid);
   let item = null;
   if (type === 'device')   item = S.data.devices.find(d => d.id === uuid);
   else if (type === 'flow') item = S.data.flows.find(f => f.id === uuid);
   else if (type === 'sender') item = S.data.senders.find(s => s.id === uuid);
   else if (type === 'receiver') item = S.data.receivers.find(r => r.id === uuid);
   else if (type === 'node') item = S.data.nodes.find(n => n.id === uuid);
-  if (!item) return uuid;
+  if (!item) return document.createTextNode(uuid);
   const wrap = document.createElement('span');
   const lbl = document.createElement('span');
-  lbl.style.color = 'var(--teal)';
+  lbl.style.cssText = 'color:var(--teal);font-size:13px;font-family:var(--sans);font-weight:600;';
   lbl.textContent = item.label || item.hostname || uuid;
   const u = document.createElement('span');
-  u.style.cssText = 'color:var(--text2);font-size:9px;margin-left:8px;font-family:var(--mono);opacity:0.6;';
+  u.style.cssText = 'color:#7a8499;font-size:10px;margin-left:8px;font-family:var(--mono);';
   u.textContent = uuid;
   u.title = uuid;
   wrap.appendChild(lbl);
@@ -1277,9 +1476,31 @@ function kvTable(rows) {
     const td = document.createElement('td');
     td.className = 'kv-v';
     if (v == null) td.textContent = '—';
-    else if (typeof v === 'string') td.textContent = v;
+    else if (typeof v === 'string') {
+      td.textContent = v;
+      // Mono font for technical strings: UUIDs, URNs, IPs, timestamps, paths
+      if (isUuid(v) || v.startsWith('urn:') || v.startsWith('http') ||
+          /^\d+:\d+$/.test(v) || /^\d{1,3}\.\d{1,3}\.\d/.test(v) ||
+          k === 'ID' || k === 'id' || displayKey === 'id') {
+        td.style.fontFamily = 'var(--mono)';
+        td.style.fontSize = '12px';
+      }
+      // Add copy-on-click for UUIDs
+      if (isUuid(v) || (k === 'ID' || k === 'id' || displayKey === 'id')) {
+        td.classList.add('kv-copyable');
+        td.addEventListener('click', () => copyToClipboard(v));
+      }
+    }
     else if (typeof v === 'number' || typeof v === 'boolean') td.textContent = String(v);
-    else if (v instanceof Node) td.appendChild(v);
+    else if (v instanceof Node) {
+      td.appendChild(v);
+      // If the node text content looks like a UUID, make it copyable
+      const nodeText = v.textContent || '';
+      if (isUuid(nodeText)) {
+        td.classList.add('kv-copyable');
+        td.addEventListener('click', () => copyToClipboard(nodeText));
+      }
+    }
     else td.textContent = JSON.stringify(v);
     tr.appendChild(td);
     table.appendChild(tr);
@@ -1694,7 +1915,7 @@ function dDevice(d) {
       const flow = S.data.flows.find(f => f.id === s.flow_id);
       const fmt  = flow ? formatType(flow.format) : '';
       const active = !!(s.subscription && s.subscription.active);
-      grid.appendChild(srCard('sender:'+s.id, active?'var(--text1)':'var(--text2)', s.label||shortId(s.id), (active?'ACTIVE':'IDLE')+(fmt?' · '+fmt.toUpperCase():''), [fmt?badge('b-'+fmt,fmt):null, badge(active?'b-active':'b-inactive',active?'▶':'—')]));
+      grid.appendChild(srCard('sender:'+s.id, active?'var(--text1)':'var(--text2)', s.label||shortId(s.id), (active?'ACTIVE':'IDLE')+(fmt?' · '+fmt.toUpperCase():''), [fmt?badge('b-'+fmt,fmt):null, statusBadge(active, active?'ACTIVE':'IDLE')]));
     });
     db.appendChild(section('Senders', ds.length, grid));
   }
@@ -1704,7 +1925,7 @@ function dDevice(d) {
     dr.forEach(r => {
       const fmt  = formatType(r.format || '');
       const active = !!(r.subscription && r.subscription.active);
-      grid.appendChild(srCard('receiver:'+r.id, active?'var(--teal)':'var(--text2)', r.label||shortId(r.id), (active?'ROUTED':'UNROUTED')+(fmt?' · '+fmt.toUpperCase():''), [fmt?badge('b-'+fmt,fmt):null, badge(active?'b-active':'b-inactive',active?'●':'—')]));
+      grid.appendChild(srCard('receiver:'+r.id, active?'var(--teal)':'var(--text2)', r.label||shortId(r.id), (active?'ROUTED':'UNROUTED')+(fmt?' · '+fmt.toUpperCase():''), [fmt?badge('b-'+fmt,fmt):null, statusBadge(active, active?'ROUTED':'UNROUTED')]));
     });
     db.appendChild(section('Receivers', dr.length, grid));
   }
@@ -1784,7 +2005,11 @@ function dSender(s) {
     subscription: 'Subscription', version: 'Version', caps: 'Caps',
   };
   const sRows = [];
-  Object.keys(s).forEach(k => {
+  // Render fields in a fixed, logical order rather than raw API key order.
+  const S_ORDER = ['id', 'label', 'description', 'flow_id', 'device_id', 'transport',
+                   'interface_bindings', 'manifest_href', 'caps', 'subscription', 'tags', 'version'];
+  const sKeys = [...S_ORDER.filter(k => k in s), ...Object.keys(s).filter(k => !S_ORDER.includes(k))];
+  sKeys.forEach(k => {
     if (S.jsonKeys) {
       const v = s[k];
       if (k === 'device_id' && S.lookup) {
@@ -1857,14 +2082,14 @@ function dSender(s) {
 
   // SDP fetch section
   if (s.manifest_href) {
-    const sdpWrap = el('div', '');
+    const sdpWrap = el('div', 'sdp-wrap');
     const sdpBtn = document.createElement('button');
     sdpBtn.textContent = '⬇ Fetch SDP';
-    sdpBtn.style.cssText = 'background:var(--teal-dim);border:1px solid var(--teal);border-radius:5px;color:var(--teal);cursor:pointer;font-family:var(--mono);font-size:10px;font-weight:700;padding:5px 12px;margin:8px 0;transition:background .15s,color .15s;display:inline-block;';
+    sdpBtn.style.cssText = 'background:var(--teal-dim);border:1px solid var(--teal);border-radius:5px;color:var(--teal);cursor:pointer;font-family:var(--mono);font-size:10px;font-weight:700;padding:5px 12px;margin:8px 0 8px 28px;transition:background .15s,color .15s;display:inline-block;';
     sdpBtn.onmouseover = () => { sdpBtn.style.background='var(--teal)'; sdpBtn.style.color='#000'; };
     sdpBtn.onmouseout  = () => { sdpBtn.style.background='var(--teal-dim)'; sdpBtn.style.color='var(--teal)'; };
     const sdpBox = document.createElement('pre');
-    sdpBox.style.cssText = 'display:none;background:var(--bg2);border:1px solid var(--border);border-radius:5px;padding:10px;font-size:10px;color:var(--green);overflow-x:auto;white-space:pre;line-height:1.5;margin:0;';
+    sdpBox.style.cssText = 'display:none;background:var(--bg2);border:1px solid var(--border);border-radius:5px;padding:10px;font-size:10px;color:var(--green);overflow-x:auto;white-space:pre;line-height:1.5;margin:0 16px 8px 28px;';
     sdpBtn.addEventListener('click', async () => {
       if (sdpBox.style.display !== 'none') {
         sdpBox.style.display='none';
@@ -1986,79 +2211,28 @@ function dReceiver(r) {
       })();
   db.appendChild(section('Subscription', null, subBox(active?'←':'⊝', 'Receiving from sender', txValEl, badge(active?'b-active':'b-inactive', active?'ACTIVE':'INACTIVE'))));
 
-  // IS-05 Connection fetch
-  const connWrap = el('div', '');
+  // IS-05 Connection fetch — cache-aware, preserves minimized state
+  const connWrap = el('div', 'is05-wrap');
   const connBtn = document.createElement('button');
   connBtn.id = 'is05-conn-btn-' + r.id;
-  connBtn.textContent = '⬇ Fetch IS-05 Connection';
-  connBtn.style.cssText = 'background:var(--teal-dim);border:1px solid var(--teal);border-radius:5px;color:var(--teal);cursor:pointer;font-family:var(--mono);font-size:10px;font-weight:700;padding:5px 12px;margin:8px 0;transition:background .15s,color .15s;display:inline-block;';
-  connBtn.onmouseover = () => { connBtn.style.background='var(--teal)'; connBtn.style.color='#000'; };
-  connBtn.onmouseout  = () => { connBtn.style.background='var(--teal-dim)'; connBtn.style.color='var(--teal)'; };
+  connBtn.className = 'is05-btn';
+  connBtn.style.cssText = 'border-radius:5px;cursor:pointer;font-family:var(--mono);font-size:10px;font-weight:700;padding:5px 12px;margin:8px 0 8px 28px;transition:background .15s,color .15s;display:inline-block;border:1px solid var(--teal);';
 
-  const connBox = el('div', '');
-  connBox.style.display = 'none';
+  const connBox = el('div', 'is05-box');
+  const isMinimized = !!(S.rxIs05Minimized && S.rxIs05Minimized[r.id]);
+  const cachedData  = S.rxIs05Cache[r.id] || null;
 
-  connBtn.addEventListener('click', async () => {
-    if (connBox.style.display !== 'none') {
-      connBox.style.display = 'none';
-      connBtn.textContent = '⬇ Fetch IS-05 Connection';
-      return;
-    }
-    connBtn.textContent = '⏳ Fetching…';
+  function setConnBtnOpen()   { connBtn.textContent='▲ Minimize Connection'; connBtn.style.background='var(--teal)'; connBtn.style.color='#000'; }
+  function setConnBtnClosed() { connBtn.textContent='⬇ IS-05 Connection';   connBtn.style.background='var(--teal-dim)'; connBtn.style.color='var(--teal)'; }
+
+  function populateConnBox(data, usedUrl) {
     connBox.innerHTML = '';
-
-    // Derive base URL from apiBase — strip back to just the origin including port
-    const urlObj = new URL(S.apiBase);
-    const origin = urlObj.protocol + '//' + urlObj.host; // includes port e.g. http://10.19.103.24:8100
-    const urls = [
-      origin + '/x-nmos/connection/v1.0/single/receivers/' + r.id + '/active',
-      origin + '/x-nmos/connection/v1.1/single/receivers/' + r.id + '/active',
-      origin + '/x-nmos/connection/v1.2/single/receivers/' + r.id + '/active',
-    ];
-
-    // Auto-detect highest supported connection API version
-    try {
-      const verRes = await fetch(origin + '/x-nmos/connection/');
-      if (verRes.ok) {
-        const vers = await verRes.json();
-        const sorted = vers.map(v => v.replace(/\/$/, '')).sort((a, b) =>
-          a.localeCompare(b, undefined, { numeric: true })
-        ).reverse();
-        if (sorted.length) {
-          urls.unshift(origin + '/x-nmos/connection/' + sorted[0] + '/single/receivers/' + r.id + '/active');
-        }
-      }
-    } catch(e) { /* ignore, fall through to default list */ }
-
-    let data = null;
-    let lastErr = '';
-    let usedUrl = '';
-    for (const url of urls) {
-      try {
-        const res = await fetch(url);
-        if (res.ok) { data = await res.json(); usedUrl = url; break; }
-        lastErr = 'HTTP ' + res.status + ' — ' + url;
-      } catch(e) { lastErr = e.message + ' — ' + url; }
-    }
-
-    // Show the URL that was used
-    const urlEl = txt('div', '', (usedUrl || urls[0]));
-    urlEl.style.cssText = 'font-family:var(--mono);font-size:9px;color:var(--text2);padding:4px 0 8px 0;word-break:break-all;';
+    const urlEl = txt('div', '', usedUrl || '');
+    urlEl.style.cssText = 'font-family:var(--mono);font-size:9px;color:var(--text2);padding-top:4px;padding-bottom:8px;word-break:break-all;';
     connBox.appendChild(urlEl);
     const idEl = txt('div', '', 'Receiver ID: ' + r.id);
-    idEl.style.cssText = 'font-family:var(--mono);font-size:9px;color:var(--text2);padding:0 0 8px 0;word-break:break-all;';
+    idEl.style.cssText = 'font-family:var(--mono);font-size:9px;color:var(--text2);padding-top:0;padding-bottom:8px;word-break:break-all;';
     connBox.appendChild(idEl);
-
-    if (!data) {
-      const errEl = txt('div', '', '⚠ ' + lastErr);
-      errEl.style.cssText = 'color:var(--amber);font-size:10px;padding:6px 0;font-family:var(--mono);';
-      connBox.appendChild(errEl);
-      connBox.style.display = 'block';
-      connBtn.textContent = '▲ Minimize Connection';
-      return;
-    }
-
-    // Build info table
     const rows = [];
     if (data.master_enable !== undefined) rows.push(['Master enable', data.master_enable ? '✔ Enabled' : '✘ Disabled']);
     if (data.sender_id) rows.push(['Sender ID', data.sender_id]);
@@ -2066,58 +2240,100 @@ function dReceiver(r) {
       rows.push(['Activation mode', data.activation.mode||'—']);
       rows.push(['Activation time', data.activation.activation_time||'—']);
     }
-
-    // Transport params
     if (data.transport_params && data.transport_params.length) {
       data.transport_params.forEach((p, i) => {
-        const leg = data.transport_params.length > 1 ? ` (leg ${i+1})` : '';
-        if (p.multicast_ip)    rows.push(['Multicast IP' + leg, p.multicast_ip]);
-        if (p.source_ip)       rows.push(['Source IP' + leg, p.source_ip]);
-        if (p.destination_port)rows.push(['Port' + leg, String(p.destination_port)]);
-        if (p.interface_ip)    rows.push(['Interface IP' + leg, p.interface_ip]);
-        if (p.rtp_enabled !== undefined) rows.push(['RTP enabled' + leg, p.rtp_enabled ? '✔' : '✘']);
+        const leg = data.transport_params.length > 1 ? ' (leg '+(i+1)+')' : '';
+        if (p.multicast_ip)    rows.push(['Multicast IP'+leg, p.multicast_ip]);
+        if (p.source_ip)       rows.push(['Source IP'+leg, p.source_ip]);
+        if (p.destination_port)rows.push(['Port'+leg, String(p.destination_port)]);
+        if (p.interface_ip)    rows.push(['Interface IP'+leg, p.interface_ip]);
+        if (p.rtp_enabled !== undefined) rows.push(['RTP enabled'+leg, p.rtp_enabled ? '✔' : '✘']);
       });
     }
-
     connBox.appendChild(kvTable(rows));
-
-    // SDP
     if (data.transport_file && data.transport_file.data) {
       const sdp = data.transport_file.data;
-
-      // Parse key fmtp params from SDP
       const fmtpMatch = sdp.match(/a=fmtp:\d+\s+(.+)/);
       if (fmtpMatch) {
         const params = {};
-        fmtpMatch[1].split(';').forEach(p => {
-          const [k, v] = p.trim().split('=');
-          if (k && v) params[k.trim()] = v.trim();
-        });
+        fmtpMatch[1].split(';').forEach(p => { const [k,v]=p.trim().split('='); if(k&&v) params[k.trim()]=v.trim(); });
         const fmtpRows = [];
-        if (params.width && params.height) fmtpRows.push(['Resolution', params.width + '×' + params.height]);
-        if (params.exactframerate) fmtpRows.push(['Frame rate', params.exactframerate]);
-        if (params.depth) fmtpRows.push(['Bit depth', params.depth + ' bit']);
-        if (params.TCS) fmtpRows.push(['Transfer', params.TCS]);
-        if (params.colorimetry) fmtpRows.push(['Colorimetry', params.colorimetry]);
-        if (params.sampling) fmtpRows.push(['Sampling', params.sampling]);
-        if (params.PM) fmtpRows.push(['Packing', params.PM]);
-        if (params.TP) fmtpRows.push(['Timing', params.TP]);
-        if (params.RANGE) fmtpRows.push(['Range', params.RANGE]);
+        if (params.width&&params.height) fmtpRows.push(['Resolution',params.width+'×'+params.height]);
+        if (params.exactframerate) fmtpRows.push(['Frame rate',params.exactframerate]);
+        if (params.depth)          fmtpRows.push(['Bit depth',params.depth+' bit']);
+        if (params.TCS)            fmtpRows.push(['Transfer',params.TCS]);
+        if (params.colorimetry)    fmtpRows.push(['Colorimetry',params.colorimetry]);
+        if (params.sampling)       fmtpRows.push(['Sampling',params.sampling]);
+        if (params.PM)             fmtpRows.push(['Packing',params.PM]);
+        if (params.TP)             fmtpRows.push(['Timing',params.TP]);
+        if (params.RANGE)          fmtpRows.push(['Range',params.RANGE]);
         if (fmtpRows.length) connBox.appendChild(kvTable(fmtpRows));
       }
-
-      // Raw SDP
-      const sdpLabel = txt('div', '', 'SDP');
-      sdpLabel.style.cssText = 'font-size:9px;color:var(--text2);font-family:var(--mono);margin:8px 0 4px 0;letter-spacing:.05em;';
+      const sdpLabel = txt('div','','SDP');
+      sdpLabel.style.cssText = 'font-size:9px;color:var(--text2);font-family:var(--mono);margin-top:8px;margin-bottom:4px;letter-spacing:.05em;';
       connBox.appendChild(sdpLabel);
       const sdpPre = document.createElement('pre');
-      sdpPre.style.cssText = 'background:var(--bg2);border:1px solid var(--border);border-radius:5px;padding:10px;font-size:10px;color:var(--green);overflow-x:auto;white-space:pre;line-height:1.5;margin:0;';
+      sdpPre.style.cssText = 'background:var(--bg2);border:1px solid var(--border);border-radius:5px;padding:10px;font-size:10px;color:var(--green);overflow-x:auto;white-space:pre;line-height:1.5;margin:0 16px 8px 28px;';
       sdpPre.textContent = sdp;
       connBox.appendChild(sdpPre);
     }
+  }
 
+  // Restore from cache immediately — no flicker, no re-fetch
+  if (cachedData) {
+    populateConnBox(cachedData, cachedData._usedUrl || '');
+    connBox.style.display = isMinimized ? 'none' : 'block';
+    if (isMinimized) setConnBtnClosed(); else setConnBtnOpen();
+  } else {
+    // First time — show skeleton and fetch
     connBox.style.display = 'block';
-    connBtn.textContent = '▲ Minimize Connection';
+    setConnBtnOpen();
+    const connSkeleton = el('div', 'conn-skeleton');
+    connSkeleton.innerHTML = '<div class="skeleton-line sk-w80"></div><div class="skeleton-line sk-w60"></div><div class="skeleton-line sk-w90"></div><div class="skeleton-line sk-w50"></div>';
+    connBox.appendChild(connSkeleton);
+    (async () => {
+      const urlObj = new URL(S.apiBase);
+      const origin = urlObj.protocol + '//' + urlObj.host;
+      const urls = [
+        origin+'/x-nmos/connection/v1.0/single/receivers/'+r.id+'/active',
+        origin+'/x-nmos/connection/v1.1/single/receivers/'+r.id+'/active',
+        origin+'/x-nmos/connection/v1.2/single/receivers/'+r.id+'/active',
+      ];
+      try {
+        const verRes = await fetch(origin+'/x-nmos/connection/');
+        if (verRes.ok) {
+          const vers = await verRes.json();
+          const sorted = vers.map(v=>v.replace(/\/$/,'')).sort((a,b)=>a.localeCompare(b,undefined,{numeric:true})).reverse();
+          if (sorted.length) urls.unshift(origin+'/x-nmos/connection/'+sorted[0]+'/single/receivers/'+r.id+'/active');
+        }
+      } catch(e) {}
+      let data=null, lastErr='', usedUrl='';
+      for (const url of urls) {
+        try { const res=await fetch(url); if(res.ok){data=await res.json();usedUrl=url;break;} lastErr='HTTP '+res.status+' — '+url; }
+        catch(e) { lastErr=e.message+' — '+url; }
+      }
+      if (data) { data._usedUrl=usedUrl; S.rxIs05Cache[r.id]=data; populateConnBox(data,usedUrl); }
+      else {
+        connBox.innerHTML='';
+        const errEl=txt('div','','⚠ '+lastErr);
+        errEl.style.cssText='color:var(--amber);font-size:10px;padding:6px 16px 6px 28px;font-family:var(--mono);';
+        connBox.appendChild(errEl);
+      }
+      connBox.style.display = (S.rxIs05Minimized&&S.rxIs05Minimized[r.id]) ? 'none' : 'block';
+    })();
+  }
+
+  connBtn.addEventListener('click', () => {
+    if (!S.rxIs05Minimized) S.rxIs05Minimized = {};
+    if (connBox.style.display !== 'none') {
+      connBox.style.display = 'none';
+      S.rxIs05Minimized[r.id] = true;
+      setConnBtnClosed();
+    } else {
+      connBox.style.display = 'block';
+      delete S.rxIs05Minimized[r.id];
+      setConnBtnOpen();
+    }
   });
 
   connWrap.appendChild(connBtn);
@@ -2139,7 +2355,11 @@ function dReceiver(r) {
     caps: 'Caps', tags: 'Tags', subscription: 'Subscription', version: 'Version',
   };
   const rRows = [];
-  Object.keys(r).forEach(k => {
+  // Render fields in a fixed, logical order rather than raw API key order.
+  const R_ORDER = ['id', 'label', 'description', 'device_id', 'format', 'transport',
+                   'interface_bindings', 'caps', 'subscription', 'tags', 'version'];
+  const rKeys = [...R_ORDER.filter(k => k in r), ...Object.keys(r).filter(k => !R_ORDER.includes(k))];
+  rKeys.forEach(k => {
     if (S.jsonKeys) {
       const v = r[k];
       if (k === 'device_id' && S.lookup) {
@@ -2166,13 +2386,20 @@ function dReceiver(r) {
         rRows.push([tagsKey, gh.value !== '—' ? gh.value : '—']);
       } else if (k === 'subscription') {
         const sub = r.subscription || {};
-        if (S.lookup && sub.sender_id) {
+        const is05SenderId = (S.rxIs05Cache[r.id] && S.rxIs05Cache[r.id].sender_id) || null;
+        const effectiveSenderId = sub.sender_id || is05SenderId;
+        if (S.lookup && effectiveSenderId) {
           const wrap = document.createElement('span');
           wrap.appendChild(document.createTextNode((sub.active ? 'Active' : 'Inactive') + ' · sender '));
-          wrap.appendChild(resolveUuid(sub.sender_id, 'sender'));
+          wrap.appendChild(resolveUuid(effectiveSenderId, 'sender'));
+          if (is05SenderId && !sub.sender_id) {
+            const hint = txt('span', '', ' (from IS-05)');
+            hint.style.cssText = 'font-size:9px;color:var(--text2);font-family:var(--mono);';
+            wrap.appendChild(hint);
+          }
           rRows.push([key, wrap]);
         } else {
-          rRows.push([key, (sub.active ? 'Active' : 'Inactive') + (sub.sender_id ? ' · sender ' + sub.sender_id : ' · no sender')]);
+          rRows.push([key, (sub.active ? 'Active' : 'Inactive') + (effectiveSenderId ? ' · sender ' + effectiveSenderId : ' · no sender')]);
         }
       } else if (k === 'version') {
         rRows.push([key, mkVersionEl(r.version)]);
@@ -2199,9 +2426,88 @@ function dReceiver(r) {
   detailPanel.appendChild(db);
 }
 
+
+// ── UUID detection and clipboard copy ──
+function isUuid(str) {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(str);
+}
+
+function copyToClipboard(text) {
+  navigator.clipboard.writeText(text).then(() => {
+    showCopyToast('Copied!');
+  }).catch(() => {
+    // Fallback
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.cssText = 'position:fixed;left:-9999px;';
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand('copy');
+    document.body.removeChild(ta);
+    showCopyToast('Copied!');
+  });
+}
+
+function showCopyToast(msg) {
+  let toast = document.getElementById('copy-toast');
+  if (!toast) {
+    toast = document.createElement('div');
+    toast.id = 'copy-toast';
+    toast.className = 'copy-toast';
+    document.body.appendChild(toast);
+  }
+  toast.textContent = msg;
+  toast.classList.add('show');
+  clearTimeout(toast._timer);
+  toast._timer = setTimeout(() => toast.classList.remove('show'), 1500);
+}
+
 // ── Helpers ──
-function esc(s) { return String(s||''); } // no longer needed for DOM but kept for safety
 function shortId(id) { return id ? id.slice(0, 8) + '…' : '—'; }
+
+// Build the multicast display for a sender or receiver row.
+// ST 2110-7: two legs (primary=red, secondary=blue) → show both with colored leg dots.
+// Single path: one multicast IP, neutral leg dot.
+// Append the multicast display to a leaf row and copy its tooltip onto the row,
+// so the full IPs remain discoverable via hover even when the column is hidden
+// (narrow panel) or clipped.
+function appendMcast(leaf, id, kind) {
+  const m = mkMcastDisplay(id, kind);
+  if (!m) return;
+  if (m.title) {
+    leaf.title = leaf.title ? (leaf.title + '  •  ' + m.title) : m.title;
+  }
+  leaf.appendChild(m);
+}
+
+function mkMcastDisplay(id, kind) {
+  const is05 = (kind === 'sender' ? S.sndIs05Cache : S.rxIs05Cache)[id];
+  const emptyPlaceholder = () => { const e = el('span', 'l-mcast l-mcast-empty'); return e; };
+  if (!is05 || !is05.transport_params) return emptyPlaceholder();
+  const legs = is05.transport_params
+    .map(p => p && (kind === 'sender' ? (p.destination_ip || p.multicast_ip) : p.multicast_ip))
+    .filter(Boolean);
+  if (!legs.length) return emptyPlaceholder();
+
+  const wrap = el('span', 'l-mcast');
+  if (legs.length >= 2) {
+    // ST 2110-7 redundant: red (primary) + blue (secondary), side by side on one line
+    wrap.classList.add('mcast-2022-7');
+    wrap.title = 'ST 2110-7 redundant — primary ' + legs[0] + ' / secondary ' + legs[1];
+    wrap.appendChild(el('span', 'leg-dot leg-red'));
+    wrap.appendChild(txt('span', 'l-mcast-ip', legs[0]));
+    wrap.appendChild(el('span', 'leg-dot leg-blue'));
+    wrap.appendChild(txt('span', 'l-mcast-ip l-mcast-ip-sec', legs[1]));
+  } else {
+    // Single path
+    wrap.title = 'Single path — ' + legs[0];
+    const dot = el('span', 'leg-dot leg-single');
+    wrap.appendChild(dot);
+    wrap.appendChild(txt('span', 'l-mcast-ip', legs[0]));
+  }
+  return wrap;
+}
+
 function formatType(urn) {
   if (!urn) return 'data';
   if (urn.includes('video')) return 'video';
@@ -2262,3 +2568,41 @@ function mkDirBadge(isSender, active, fmt) {
   }
   return el;
 }
+
+
+// ── Keyboard navigation ──
+document.addEventListener('keydown', (e) => {
+  // Only handle when not typing in an input
+  if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+
+  const rows = Array.from(treeBody.querySelectorAll('[data-id]'));
+  if (!rows.length) return;
+
+  if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+    e.preventDefault();
+    const currentIdx = rows.findIndex(r => r.classList.contains('sel-leaf') || r.classList.contains('sel-node') || r.classList.contains('sel-device') || r.dataset.id === S.sel.id);
+    let nextIdx;
+    if (e.key === 'ArrowDown') {
+      nextIdx = currentIdx < rows.length - 1 ? currentIdx + 1 : 0;
+    } else {
+      nextIdx = currentIdx > 0 ? currentIdx - 1 : rows.length - 1;
+    }
+    const nextRow = rows[nextIdx];
+    if (nextRow) {
+      nextRow.click();
+      nextRow.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }
+  } else if (e.key === 'Enter') {
+    // Toggle open/close if it's a node or device
+    const sel = S.sel;
+    if (sel.type === 'node' || sel.type === 'device' || sel.type === 'folder') {
+      if (S.open.has(sel.id)) S.open.delete(sel.id);
+      else S.open.add(sel.id);
+      renderTree();
+    }
+  } else if (e.key === 'Escape') {
+    S.sel = { type: null, id: null };
+    renderTree();
+    detailPanel.innerHTML = '';
+  }
+});

@@ -8,11 +8,15 @@
 </head>
 <body>
 
+<!-- Top gradient accent bar -->
+<div class="accent-bar"></div>
+
 <div class="header">
   <div class="logo">
-    <img src="logo.svg" height="48" alt="E-NMOS" style="display:block"/>
+    <div class="logo-glow"></div>
+    <img src="logo.svg" height="48" alt="E-NMOS" style="display:block;position:relative;z-index:1;"/>
   </div>
-  <span style="font-size:7px;color:var(--text2);font-family:var(--mono);letter-spacing:.04em;opacity:0.7;flex-shrink:0;align-self:flex-end;padding-bottom:6px;margin-left:-8px;">v1.41.0</span>
+  <span class="version-tag">v2.1.0</span>
   <div class="url-bar">
     <span class="url-label">URL</span>
     <input id="ip-input" type="text" placeholder="http://10.101.99.26/x-nmos" spellcheck="false" autocomplete="off" />
@@ -24,14 +28,15 @@
 </div>
 
 <!-- Bookmarks panel -->
-<div id="bookmarks-panel" style="display:none;position:fixed;top:48px;left:0;right:0;z-index:200;background:var(--bg1);border-bottom:2px solid var(--border);padding:12px 16px;max-height:320px;overflow-y:auto;">
-  <div style="color:var(--text2);font-size:9px;letter-spacing:.08em;margin-bottom:10px;">SAVED DEVICES</div>
+<div id="bookmarks-panel" style="display:none;position:fixed;top:52px;left:0;right:0;z-index:200;background:var(--bg1);border-bottom:2px solid var(--border);padding:12px 16px;max-height:320px;overflow-y:auto;backdrop-filter:blur(12px);">
+  <div style="color:var(--text2);font-size:9px;letter-spacing:.08em;margin-bottom:10px;font-family:var(--sans);">SAVED DEVICES</div>
   <div id="bookmarks-list"></div>
   <button id="btn-close-bookmarks" class="btn btn-ghost" style="margin-top:10px;font-size:9px;">✕ Close</button>
 </div>
 
 <div class="statusbar">
   <div class="status-pill s-idle" id="status-pill"><span class="status-dot"></span><span id="status-text">IDLE</span></div>
+  <div class="status-separator"></div>
   <div class="chips" id="chips" style="display:none">
     <div class="chip">Nodes <b id="cnt-nodes">0</b></div>
     <div class="chip">Devices <b id="cnt-devices">0</b></div>
@@ -45,13 +50,29 @@
 <div class="layout">
   <div class="tree-panel">
     <div class="tree-search">
-      <input id="search" type="text" placeholder="Filter…" />
+      <input id="search" type="text" placeholder="🔍  Filter resources…" />
       <button id="toggle-devices-btn" title="Collapse all devices">⊟ Collapse</button>
+      <button id="toggle-subscribed-btn" title="Show only subscribed receivers">⊙ Subscribed</button>
+    </div>
+    <div class="tree-legend">
+      <span class="lg-item"><span class="lg-dot lg-active"></span>active</span>
+      <span class="lg-item"><span class="lg-dot lg-idle"></span>idle / disabled</span>
+      <span class="lg-item"><span class="leg-dot leg-red"></span><span class="leg-dot leg-blue"></span>ST 2110-7 (red / blue)</span>
     </div>
     <div class="tree-body" id="tree-body">
-      <div class="detail-empty" style="height:auto;padding:30px 20px">
-        <div class="detail-empty-icon">◎</div>
-        <div class="detail-empty-sub">Enter your NMOS URL and click QUERY</div>
+      <div class="detail-empty" style="height:auto;padding:40px 20px">
+        <div class="detail-empty-icon">
+          <svg width="48" height="48" viewBox="0 0 48 48" fill="none">
+            <circle cx="24" cy="24" r="20" stroke="var(--blue)" stroke-width="1.5" opacity="0.3"/>
+            <circle cx="24" cy="24" r="12" stroke="var(--blue)" stroke-width="1.5" opacity="0.5"/>
+            <circle cx="24" cy="24" r="4" fill="var(--blue)" opacity="0.8"/>
+            <line x1="24" y1="4" x2="24" y2="10" stroke="var(--teal)" stroke-width="1.5" opacity="0.4"/>
+            <line x1="24" y1="38" x2="24" y2="44" stroke="var(--teal)" stroke-width="1.5" opacity="0.4"/>
+            <line x1="4" y1="24" x2="10" y2="24" stroke="var(--teal)" stroke-width="1.5" opacity="0.4"/>
+            <line x1="38" y1="24" x2="44" y2="24" stroke="var(--teal)" stroke-width="1.5" opacity="0.4"/>
+          </svg>
+        </div>
+        <div class="detail-empty-sub" style="font-family:var(--sans);font-size:12px;color:var(--text1);">Enter your NMOS URL and click <b style="color:var(--blue)">QUERY</b></div>
       </div>
     </div>
   </div>
@@ -62,9 +83,32 @@
   </div>
   <div class="detail-panel" id="detail-panel">
     <div class="detail-empty">
-      <div class="detail-empty-icon">◎</div>
+      <div class="detail-empty-icon">
+        <svg width="64" height="64" viewBox="0 0 64 64" fill="none" class="empty-icon-pulse">
+          <circle cx="32" cy="32" r="28" stroke="var(--blue)" stroke-width="1" opacity="0.2"/>
+          <circle cx="32" cy="32" r="20" stroke="var(--purple)" stroke-width="1" opacity="0.3"/>
+          <circle cx="32" cy="32" r="12" stroke="var(--teal)" stroke-width="1.5" opacity="0.5"/>
+          <circle cx="32" cy="32" r="4" fill="var(--blue)" opacity="0.9"/>
+          <!-- Signal lines -->
+          <path d="M32 4 L32 12" stroke="var(--blue)" stroke-width="1.5" opacity="0.4" stroke-linecap="round"/>
+          <path d="M32 52 L32 60" stroke="var(--blue)" stroke-width="1.5" opacity="0.4" stroke-linecap="round"/>
+          <path d="M4 32 L12 32" stroke="var(--teal)" stroke-width="1.5" opacity="0.4" stroke-linecap="round"/>
+          <path d="M52 32 L60 32" stroke="var(--teal)" stroke-width="1.5" opacity="0.4" stroke-linecap="round"/>
+          <path d="M11 11 L17 17" stroke="var(--purple)" stroke-width="1" opacity="0.3" stroke-linecap="round"/>
+          <path d="M47 47 L53 53" stroke="var(--purple)" stroke-width="1" opacity="0.3" stroke-linecap="round"/>
+          <path d="M53 11 L47 17" stroke="var(--purple)" stroke-width="1" opacity="0.3" stroke-linecap="round"/>
+          <path d="M11 53 L17 47" stroke="var(--purple)" stroke-width="1" opacity="0.3" stroke-linecap="round"/>
+        </svg>
+      </div>
       <div class="detail-empty-title">Nothing selected</div>
       <div class="detail-empty-sub">Click any node, device, sender,<br>or receiver in the tree to inspect it.</div>
+      <div class="quickstart">
+        <div class="quickstart-title">Quick Start</div>
+        <div class="quickstart-step"><span class="qs-num">1</span> Enter your NMOS Node or Registry URL above</div>
+        <div class="quickstart-step"><span class="qs-num">2</span> Click <b style="color:var(--blue);">▶ QUERY</b> to discover resources</div>
+        <div class="quickstart-step"><span class="qs-num">3</span> Browse the tree and inspect any resource</div>
+        <div class="quickstart-step"><span class="qs-num">4</span> Hover field names for NMOS explanations</div>
+      </div>
     </div>
   </div>
 </div>

@@ -1,24 +1,29 @@
 {
   "manifest_version": 3,
   "name": "E-NMOS",
-  "version": "1.41.0",
-  "description": "E-NMOS by Emir — Browse NMOS IS-04 nodes, devices, senders and receivers.",
+  "version": "2.1.0",
+  "description": "E-NMOS v2.0 by Emir \u2014 Browse NMOS IS-04 nodes, devices, senders and receivers with a beautiful, intuitive interface.",
   "action": {
     "default_popup": "popup.html",
     "default_title": "E-NMOS",
     "default_icon": {
-      "16":  "icon16.png",
-      "48":  "icon48.png",
+      "16": "icon16.png",
+      "48": "icon48.png",
       "128": "icon128.png"
     }
   },
   "icons": {
-    "16":  "icon16.png",
-    "48":  "icon48.png",
+    "16": "icon16.png",
+    "48": "icon48.png",
     "128": "icon128.png"
   },
-  "permissions": ["storage"],
-  "host_permissions": ["http://*/*", "https://*/*"],
+  "permissions": [
+    "storage"
+  ],
+  "host_permissions": [
+    "http://*/*",
+    "https://*/*"
+  ],
   "content_security_policy": {
     "extension_pages": "script-src 'self'; object-src 'self'"
   }
