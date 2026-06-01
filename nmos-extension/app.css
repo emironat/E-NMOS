@@ -588,12 +588,13 @@ body {
   100% { transform: scale(2.6); opacity: 0; }
 }
 
-.l-lbl { font-size: 11px; color: var(--text1); font-family: var(--sans); flex: 0 1 auto; min-width: 170px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.l-lbl { font-size: 11px; color: var(--text1); font-family: var(--sans); flex: 1 1 auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .row-leaf.sel-leaf .l-lbl { color: var(--text0); font-weight: 700; }
-.leaf-badges { display: flex; align-items: center; gap: 4px; flex: 0 0 auto; margin-left: auto; pointer-events: none; }
+.leaf-badges { display: flex; align-items: center; justify-content: flex-end; gap: 4px; flex: 0 0 auto; min-width: 56px; pointer-events: none; }
 .l-rxid { font-size: 9px; color: #8a93a8; font-family: var(--mono); flex-shrink: 0; margin-left: 6px; white-space: nowrap; }
-.l-mcast { display: inline-flex; align-items: center; gap: 5px; flex: 0 1 165px; min-width: 0; white-space: nowrap; overflow: hidden; justify-content: flex-start; }
-.l-mcast-empty { flex: 0 1 165px; }
+.l-mcast { display: inline-flex; align-items: center; gap: 0; flex: 0 0 156px; min-width: 0; white-space: nowrap; overflow: hidden; justify-content: flex-start; }
+.l-mcast-empty { flex: 0 0 156px; }
+.slot { display: inline-flex; align-items: center; gap: 5px; width: 76px; flex: 0 0 76px; overflow: hidden; white-space: nowrap; }
 .mcast-leg-row { display: inline-flex; align-items: center; gap: 4px; }
 .l-mcast-ip { font-size: 10px; color: var(--teal); font-family: var(--mono); letter-spacing: .02em; opacity: 0.9; }
 .l-mcast-ip-sec { color: #6fb4ff; opacity: 0.95; }

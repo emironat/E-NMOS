@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "E-NMOS",
-  "version": "2.1.27",
+  "version": "2.1.28",
   "description": "E-NMOS v2.0 by Emir \u2014 Browse NMOS IS-04 nodes, devices, senders and receivers with a beautiful, intuitive interface.",
   "action": {
     "default_popup": "popup.html",

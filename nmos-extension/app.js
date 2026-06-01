@@ -2500,19 +2500,24 @@ function mkMcastDisplay(id, kind, active) {
   const wrap = el('span', 'l-mcast');
   if (active === false) wrap.classList.add('l-mcast-idle');
   if (legs.length >= 2) {
-    // ST 2110-7 redundant: red (primary) + blue (secondary), side by side on one line
+    // ST 2110-7 redundant: red (primary) + blue (secondary), each in its own fixed slot
     wrap.classList.add('mcast-2022-7');
     wrap.title = 'ST 2110-7 redundant — primary ' + legs[0] + ' / secondary ' + legs[1];
-    wrap.appendChild(el('span', 'leg-dot leg-red'));
-    wrap.appendChild(txt('span', 'l-mcast-ip l-mcast-ip-pri', legs[0]));
-    wrap.appendChild(el('span', 'leg-dot leg-blue'));
-    wrap.appendChild(txt('span', 'l-mcast-ip l-mcast-ip-sec', legs[1]));
+    const s1 = el('span', 'slot');
+    s1.appendChild(el('span', 'leg-dot leg-red'));
+    s1.appendChild(txt('span', 'l-mcast-ip l-mcast-ip-pri', legs[0]));
+    wrap.appendChild(s1);
+    const s2 = el('span', 'slot');
+    s2.appendChild(el('span', 'leg-dot leg-blue'));
+    s2.appendChild(txt('span', 'l-mcast-ip l-mcast-ip-sec', legs[1]));
+    wrap.appendChild(s2);
   } else {
-    // Single path
+    // Single path — sits in the primary (left) slot
     wrap.title = 'Single path — ' + legs[0];
-    const dot = el('span', 'leg-dot leg-single');
-    wrap.appendChild(dot);
-    wrap.appendChild(txt('span', 'l-mcast-ip', legs[0]));
+    const s1 = el('span', 'slot');
+    s1.appendChild(el('span', 'leg-dot leg-single'));
+    s1.appendChild(txt('span', 'l-mcast-ip', legs[0]));
+    wrap.appendChild(s1);
   }
   return wrap;
 }
