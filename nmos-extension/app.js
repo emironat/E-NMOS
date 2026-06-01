@@ -613,7 +613,9 @@ async function doQuery(silent = false) {
           if (sorted.length) connVer = sorted[0];
         }
       } catch(e) {}
-      const activeRx = (S.data.receivers || []).filter(r => r.subscription && r.subscription.active);
+      // Fetch IS-05 active for ALL receivers (active or not) — an idle receiver
+      // can still have a configured multicast address, same as senders.
+      const allRx = (S.data.receivers || []);
 
       // Debounced renderTree — wait 300ms after last result before re-rendering
       let renderTimer = null;
@@ -624,8 +626,8 @@ async function doQuery(silent = false) {
 
       // fetch in small parallel batches to avoid flooding the device
       const BATCH = 6;
-      for (let i = 0; i < activeRx.length; i += BATCH) {
-        const batch = activeRx.slice(i, i + BATCH);
+      for (let i = 0; i < allRx.length; i += BATCH) {
+        const batch = allRx.slice(i, i + BATCH);
         await Promise.all(batch.map(async r => {
           try {
             const url = origin + '/x-nmos/connection/' + connVer + '/single/receivers/' + r.id + '/active';
@@ -870,7 +872,7 @@ function renderTree() {
     // ── NODE ROW ──
     const nodeRow = mkRow('row-node', node.id, 'node', 'toggle', nodeOpen, nodeSel);
     nodeRow.appendChild(span('n-chev' + (nodeOpen ? ' open' : ''), '▶'));
-    nodeRow.appendChild(mkWordBadge('NODE', '#4a9eff', '#162840'));
+    nodeRow.appendChild(mkWordBadge('NODE', '#2ec8b8', '#0c2825'));
     const nLbl = txt('span', 'n-lbl', nodeLabel);
     nLbl.title = nodeLabel;
     nodeRow.appendChild(nLbl);
@@ -933,7 +935,7 @@ function renderTree() {
             const leaf = mkRow('row-leaf' + selCls, s.id, 'sender', 'select', false, false);
             leaf.appendChild(span('dot ' + (active ? 'dot-on-'+fmt : 'dot-off-'+fmt), ''));
             const sLbl=txt('span','l-lbl',s.label||shortId(s.id));sLbl.title=s.label||s.id;leaf.appendChild(sLbl);
-            appendMcast(leaf, s.id, 'sender');
+            appendMcast(leaf, s.id, 'sender', active);
             // Inline format summary
             const fmtSummary = mkFmtSummary(flow, fmt);
             if (fmtSummary) leaf.appendChild(fmtSummary);
@@ -973,7 +975,7 @@ function renderTree() {
             const leaf = mkRow('row-leaf' + selCls, r.id, 'receiver', 'select', false, false);
             leaf.appendChild(span('dot ' + (active ? 'dot-on-'+fmt : 'dot-off-'+fmt), ''));
             const rLbl=txt('span','l-lbl',r.label||shortId(r.id));rLbl.title=r.label||r.id;leaf.appendChild(rLbl);
-            appendMcast(leaf, r.id, 'receiver');
+            appendMcast(leaf, r.id, 'receiver', active);
             const rFmt = mkFmtSummary(null, fmt);
             if (rFmt) leaf.appendChild(rFmt);
             const rbadges = document.createElement('div');
@@ -1008,7 +1010,7 @@ function renderTree() {
           const leaf=mkRow('row-leaf'+selCls,s.id,'sender','select',false,false);
           leaf.appendChild(span('dot '+(active?'dot-on-'+fmt:'dot-off-'+fmt),''));
           const sLbl2=txt('span','l-lbl',s.label||shortId(s.id));sLbl2.title=s.label||s.id;leaf.appendChild(sLbl2);
-          appendMcast(leaf, s.id, 'sender');
+          appendMcast(leaf, s.id, 'sender', active);
           const fmtSummary2 = mkFmtSummary(flow, fmt);
           if (fmtSummary2) leaf.appendChild(fmtSummary2);
           const sbadges2=document.createElement('div');sbadges2.className='leaf-badges';
@@ -1041,7 +1043,7 @@ function renderTree() {
           const leaf=mkRow('row-leaf'+selCls,r.id,'receiver','select',false,false);
           leaf.appendChild(span('dot '+(active?'dot-on-'+fmt:'dot-off-'+fmt),''));
           const rLbl2=txt('span','l-lbl',r.label||shortId(r.id));rLbl2.title=r.label||r.id;leaf.appendChild(rLbl2);
-          appendMcast(leaf, r.id, 'receiver');
+          appendMcast(leaf, r.id, 'receiver', active);
           const rFmt2 = mkFmtSummary(null, fmt);
           if (rFmt2) leaf.appendChild(rFmt2);
           const rbadges2=document.createElement('div');rbadges2.className='leaf-badges';
@@ -1247,6 +1249,12 @@ function mkOpenApiBtn(url) {
   btn.title = url;
   btn.addEventListener('click', () => window.open(url, '_blank'));
   return btn;
+}
+function mkDhActions(url) {
+  const w = el('div', 'dh-actions');
+  w.appendChild(mkOpenApiBtn(url));
+  w.appendChild(mkRefreshBtn());
+  return w;
 }
 function renderDetail() {
   const { type, id } = S.sel;
@@ -1762,7 +1770,7 @@ function dNode(n) {
   const nr   = S.data.receivers;
 
   const dh = el('div', 'dh');
-  dh.appendChild(mkDetailBadge('NODE', '#ffffff', '#1a1e25', 14));
+  dh.appendChild(mkDetailBadge('NODE', '#2ec8b8', '#0c2825', 14));
   const dhInfo = el('div', 'dh-info');
   dhInfo.appendChild(txt('div', 'dh-title', n.label || n.hostname || shortId(n.id)));
   const meta = el('div', 'dh-meta');
@@ -1775,8 +1783,7 @@ function dNode(n) {
   const urlEl = txt('div', 'dh-url', S.apiBase + '/self');
   dhInfo.appendChild(urlEl);
   dh.appendChild(dhInfo);
-  dh.appendChild(mkOpenApiBtn(S.apiBase + '/self'));
-  dh.appendChild(mkRefreshBtn());
+  dh.appendChild(mkDhActions(S.apiBase + '/self'));
   detailPanel.appendChild(dh);
 
   const db = el('div', 'db');
@@ -1898,8 +1905,7 @@ function dDevice(d) {
   const urlEl = txt('div', 'dh-url', S.apiBase + '/devices/' + d.id);
   dhInfo.appendChild(urlEl);
   dh.appendChild(dhInfo);
-  dh.appendChild(mkOpenApiBtn(S.apiBase + '/devices/' + d.id));
-  dh.appendChild(mkRefreshBtn());
+  dh.appendChild(mkDhActions(S.apiBase + '/devices/' + d.id));
   detailPanel.appendChild(dh);
 
   const db = el('div', 'db');
@@ -1958,8 +1964,7 @@ function dSender(s) {
   const urlEl = txt('div', 'dh-url', S.apiBase + '/senders/' + s.id);
   dhInfo.appendChild(urlEl);
   dh.appendChild(dhInfo);
-  dh.appendChild(mkOpenApiBtn(S.apiBase + '/senders/' + s.id));
-  dh.appendChild(mkRefreshBtn());
+  dh.appendChild(mkDhActions(S.apiBase + '/senders/' + s.id));
   detailPanel.appendChild(dh);
 
   const db = el('div', 'db');
@@ -2005,10 +2010,12 @@ function dSender(s) {
     subscription: 'Subscription', version: 'Version', caps: 'Caps',
   };
   const sRows = [];
-  // Render fields in a fixed, logical order rather than raw API key order.
-  const S_ORDER = ['id', 'label', 'description', 'flow_id', 'device_id', 'transport',
-                   'interface_bindings', 'manifest_href', 'caps', 'subscription', 'tags', 'version'];
-  const sKeys = [...S_ORDER.filter(k => k in s), ...Object.keys(s).filter(k => !S_ORDER.includes(k))];
+  // Friendly view: fixed logical order. JSON-keys view: mirror the raw JSON key order.
+  const S_ORDER = ['id', 'label', 'description', 'device_id', 'flow_id', 'format', 'transport',
+                   'interface_bindings', 'subscription', 'tags', 'version', 'manifest_href', 'caps'];
+  const sKeys = S.jsonKeys
+    ? Object.keys(s)
+    : [...S_ORDER.filter(k => k in s), ...Object.keys(s).filter(k => !S_ORDER.includes(k))];
   sKeys.forEach(k => {
     if (S.jsonKeys) {
       const v = s[k];
@@ -2146,8 +2153,7 @@ function dReceiver(r) {
   const urlEl = txt('div', 'dh-url', S.apiBase + '/receivers/' + r.id);
   dhInfo.appendChild(urlEl);
   dh.appendChild(dhInfo);
-  dh.appendChild(mkOpenApiBtn(S.apiBase + '/receivers/' + r.id));
-  dh.appendChild(mkRefreshBtn());
+  dh.appendChild(mkDhActions(S.apiBase + '/receivers/' + r.id));
   detailPanel.appendChild(dh);
 
   const db = el('div', 'db');
@@ -2355,10 +2361,12 @@ function dReceiver(r) {
     caps: 'Caps', tags: 'Tags', subscription: 'Subscription', version: 'Version',
   };
   const rRows = [];
-  // Render fields in a fixed, logical order rather than raw API key order.
-  const R_ORDER = ['id', 'label', 'description', 'device_id', 'format', 'transport',
-                   'interface_bindings', 'caps', 'subscription', 'tags', 'version'];
-  const rKeys = [...R_ORDER.filter(k => k in r), ...Object.keys(r).filter(k => !R_ORDER.includes(k))];
+  // Friendly view: fixed logical order. JSON-keys view: mirror the raw JSON key order.
+  const R_ORDER = ['id', 'label', 'description', 'device_id', 'flow_id', 'format', 'transport',
+                   'interface_bindings', 'subscription', 'tags', 'version', 'manifest_href', 'caps'];
+  const rKeys = S.jsonKeys
+    ? Object.keys(r)
+    : [...R_ORDER.filter(k => k in r), ...Object.keys(r).filter(k => !R_ORDER.includes(k))];
   rKeys.forEach(k => {
     if (S.jsonKeys) {
       const v = r[k];
@@ -2471,8 +2479,8 @@ function shortId(id) { return id ? id.slice(0, 8) + '…' : '—'; }
 // Append the multicast display to a leaf row and copy its tooltip onto the row,
 // so the full IPs remain discoverable via hover even when the column is hidden
 // (narrow panel) or clipped.
-function appendMcast(leaf, id, kind) {
-  const m = mkMcastDisplay(id, kind);
+function appendMcast(leaf, id, kind, active) {
+  const m = mkMcastDisplay(id, kind, active);
   if (!m) return;
   if (m.title) {
     leaf.title = leaf.title ? (leaf.title + '  •  ' + m.title) : m.title;
@@ -2480,7 +2488,7 @@ function appendMcast(leaf, id, kind) {
   leaf.appendChild(m);
 }
 
-function mkMcastDisplay(id, kind) {
+function mkMcastDisplay(id, kind, active) {
   const is05 = (kind === 'sender' ? S.sndIs05Cache : S.rxIs05Cache)[id];
   const emptyPlaceholder = () => { const e = el('span', 'l-mcast l-mcast-empty'); return e; };
   if (!is05 || !is05.transport_params) return emptyPlaceholder();
@@ -2490,12 +2498,13 @@ function mkMcastDisplay(id, kind) {
   if (!legs.length) return emptyPlaceholder();
 
   const wrap = el('span', 'l-mcast');
+  if (active === false) wrap.classList.add('l-mcast-idle');
   if (legs.length >= 2) {
     // ST 2110-7 redundant: red (primary) + blue (secondary), side by side on one line
     wrap.classList.add('mcast-2022-7');
     wrap.title = 'ST 2110-7 redundant — primary ' + legs[0] + ' / secondary ' + legs[1];
     wrap.appendChild(el('span', 'leg-dot leg-red'));
-    wrap.appendChild(txt('span', 'l-mcast-ip', legs[0]));
+    wrap.appendChild(txt('span', 'l-mcast-ip l-mcast-ip-pri', legs[0]));
     wrap.appendChild(el('span', 'leg-dot leg-blue'));
     wrap.appendChild(txt('span', 'l-mcast-ip l-mcast-ip-sec', legs[1]));
   } else {
