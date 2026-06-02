@@ -1479,17 +1479,24 @@ function mkLookupToggle() {
 // Returns a DOM element showing "label uuid_short" if lookup ON, else plain UUID
 function resolveUuid(uuid, type) {
   if (!uuid) return document.createTextNode('—');
-  if (!S.lookup) return document.createTextNode(uuid);
+  const isDev = type === 'device';
+  const devSpan = (text) => {
+    const s = document.createElement('span');
+    s.style.cssText = 'color:var(--purple);font-family:var(--mono);font-size:12px;font-weight:600;';
+    s.textContent = text;
+    return s;
+  };
+  if (!S.lookup) return isDev ? devSpan(uuid) : document.createTextNode(uuid);
   let item = null;
   if (type === 'device')   item = S.data.devices.find(d => d.id === uuid);
   else if (type === 'flow') item = S.data.flows.find(f => f.id === uuid);
   else if (type === 'sender') item = S.data.senders.find(s => s.id === uuid);
   else if (type === 'receiver') item = S.data.receivers.find(r => r.id === uuid);
   else if (type === 'node') item = S.data.nodes.find(n => n.id === uuid);
-  if (!item) return document.createTextNode(uuid);
+  if (!item) return isDev ? devSpan(uuid) : document.createTextNode(uuid);
   const wrap = document.createElement('span');
   const lbl = document.createElement('span');
-  lbl.style.cssText = 'color:var(--teal);font-size:13px;font-family:var(--sans);font-weight:600;';
+  lbl.style.cssText = 'color:' + (isDev ? 'var(--purple)' : 'var(--teal)') + ';font-size:13px;font-family:var(--sans);font-weight:600;';
   lbl.textContent = item.label || item.hostname || uuid;
   const u = document.createElement('span');
   u.style.cssText = 'color:#7a8499;font-size:10px;margin-left:8px;font-family:var(--mono);';
@@ -1524,7 +1531,9 @@ function kvTable(rows) {
           /^\d+:\d+$/.test(v) || /^\d{1,3}\.\d{1,3}\.\d/.test(v) ||
           k === 'ID' || k === 'id' || displayKey === 'id') {
         td.style.fontFamily = 'var(--mono)';
-        td.style.fontSize = '12px';
+        // IP addresses match the left tree's multicast size (9px); other
+        // technical strings (UUIDs, URNs, URLs) stay at 12px for readability.
+        td.style.fontSize = /^\d{1,3}\.\d{1,3}\.\d/.test(v) ? '11px' : '12px';
       }
       // Add copy-on-click for UUIDs
       if (isUuid(v) || (k === 'ID' || k === 'id' || displayKey === 'id')) {
@@ -1927,7 +1936,7 @@ function dDevice(d) {
   const node = S.data.nodes.find(n => n.id === d.node_id) || (S.data.nodes.length === 1 ? S.data.nodes[0] : null);
 
   const dh = el('div', 'dh');
-  dh.appendChild(mkDetailBadge('DEVICE', '#ffffff', '#1a1e25', 11));
+  dh.appendChild(mkDetailBadge('DEVICE', '#9b72f0', '#1e1038', 11));
   const dhInfo = el('div', 'dh-info');
   dhInfo.appendChild(txt('div', 'dh-title', d.label || shortId(d.id)));
   const meta = el('div', 'dh-meta');

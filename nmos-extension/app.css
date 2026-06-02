@@ -599,11 +599,11 @@ body {
 .row-leaf.sel-leaf .l-lbl { color: var(--text0); font-weight: 700; }
 .leaf-badges { display: flex; align-items: center; justify-content: flex-end; gap: 4px; flex: 0 0 auto; min-width: 56px; pointer-events: none; }
 .l-rxid { font-size: 9px; color: #8a93a8; font-family: var(--mono); flex-shrink: 0; margin-left: 6px; white-space: nowrap; }
-.l-mcast { display: inline-flex; align-items: center; gap: 8px; flex: 0 0 156px; min-width: 0; white-space: nowrap; overflow: hidden; justify-content: flex-start; }
-.l-mcast-empty { flex: 0 0 156px; }
-.slot { display: inline-flex; align-items: center; gap: 4px; width: 74px; flex: 0 0 74px; overflow: hidden; white-space: nowrap; }
+.l-mcast { display: inline-flex; align-items: center; gap: 8px; flex: 0 0 182px; min-width: 0; white-space: nowrap; overflow: hidden; justify-content: flex-start; }
+.l-mcast-empty { flex: 0 0 182px; }
+.slot { display: inline-flex; align-items: center; gap: 3px; width: 87px; flex: 0 0 87px; overflow: hidden; white-space: nowrap; }
 .mcast-leg-row { display: inline-flex; align-items: center; gap: 4px; }
-.l-mcast-ip { font-size: 9px; color: var(--teal); font-family: var(--mono); letter-spacing: 0; opacity: 0.9; }
+.l-mcast-ip { font-size: 11px; color: var(--teal); font-family: var(--mono); letter-spacing: 0; opacity: 0.9; }
 .l-mcast-ip-sec { color: #6fb4ff; opacity: 0.95; }
 .l-mcast-ip-pri { color: #ff6b6b; opacity: 0.95; }
 .leg-dot { width: 5px; height: 5px; border-radius: 50%; flex-shrink: 0; }
@@ -796,13 +796,13 @@ body {
 }
 .b-inactive { background: var(--bg3); color: var(--text2); border: 1px solid var(--border); }
 .badge-status { display: inline-flex; align-items: center; gap: 5px; }
-.badge-dot { width: 6px; height: 6px; border-radius: 50%; background: #3dba6f; box-shadow: 0 0 5px #3dba6f; flex-shrink: 0; }
+.badge-dot { width: 6px; height: 6px; border-radius: 50%; background: #ff6b6b; box-shadow: 0 0 5px rgba(224, 85, 85, 0.6); flex-shrink: 0; }
 .badge-dot-idle { background: transparent; border: 1.5px solid var(--text2); box-shadow: none; }
 .b-ptp      { background: var(--teal-dim); color: var(--teal); }
 .b-node     { background: var(--blue-dim); color: var(--blue); }
 .b-device   { background: var(--purple-dim); color: var(--purple); }
-.b-sender   { background: var(--blue-dim); color: var(--blue); }
-.b-receiver { background: var(--teal-dim); color: var(--teal); }
+.b-sender   { background: #2e1020; color: #e06090; }
+.b-receiver { background: #2e1020; color: #e06090; }
 
 /* ── Cards ── */
 .sr-grid { padding: 10px 14px; display: flex; flex-direction: column; gap: 6px; }
