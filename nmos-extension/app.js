@@ -258,6 +258,61 @@ btnAuto.addEventListener('click', () => {
   }
 });
 
+// ── Role-aware subscription status help popover (in the Subscription section header) ──
+let _subHelpPop = null;
+function subHelpHTML(role) {
+  const head = '<div class="lhp-head"><span>Status logic</span><span class="lhp-close" title="Close">✕</span></div>';
+  const foot = '<div class="lhp-foot"><span class="lhp-dot lit" style="margin-top:0;"></span> active dot pings &amp; is colored by format (video / audio / data) &nbsp;·&nbsp; <span class="lhp-dot dim" style="margin-top:0;"></span> idle</div>';
+  if (role === 'sender') {
+    return head +
+      '<div class="lhp-grp">Sender</div>' +
+      '<div class="lhp-row"><div class="lhp-cond"><span class="k">active</span> <b>true</b><br><span class="k">receiver_id</span> <b>set</b></div><span class="lhp-dot lit"></span><span class="lhp-badge on">ACTIVE</span><span class="lhp-mean">transmitting to an NMOS receiver</span></div>' +
+      '<div class="lhp-row"><div class="lhp-cond"><span class="k">active</span> <b>true</b><br><span class="k">receiver_id</span> <b>null</b></div><span class="lhp-dot lit"></span><span class="lhp-badge on">ACTIVE</span><span class="lhp-mean">on, but <span class="am">routed outside NMOS</span></span></div>' +
+      '<div class="lhp-row"><div class="lhp-cond"><span class="k">active</span> <b>false</b></div><span class="lhp-dot dim"></span><span class="lhp-badge off">IDLE</span><span class="lhp-mean">not transmitting</span></div>' +
+      foot;
+  }
+  return head +
+    '<div class="lhp-grp">Receiver</div>' +
+    '<div class="lhp-row"><div class="lhp-cond"><span class="k">active</span> <b>true</b><br><span class="k">sender_id</span> <b>set</b></div><span class="lhp-dot lit"></span><span class="lhp-badge on">ROUTED</span><span class="lhp-mean">receiving from an NMOS sender</span></div>' +
+    '<div class="lhp-row"><div class="lhp-cond"><span class="k">active</span> <b>true</b><br><span class="k">sender_id</span> <b>null</b></div><span class="lhp-dot lit"></span><span class="lhp-badge on">ROUTED</span><span class="lhp-mean"><span class="am">non-NMOS source</span>, IP from IS-05</span></div>' +
+    '<div class="lhp-row"><div class="lhp-cond"><span class="k">active</span> <b>false</b></div><span class="lhp-dot dim"></span><span class="lhp-badge off">UNROUTED</span><span class="lhp-mean">no active inbound connection</span></div>' +
+    foot;
+}
+function ensureSubHelpPop() {
+  if (_subHelpPop) return _subHelpPop;
+  const pop = document.createElement('div');
+  pop.className = 'lg-help-pop';
+  pop.hidden = true;
+  document.body.appendChild(pop);
+  document.addEventListener('click', e => {
+    if (!pop.hidden && !pop.contains(e.target) && !(e.target.classList && e.target.classList.contains('sub-help-btn'))) pop.hidden = true;
+  });
+  document.addEventListener('keydown', e => { if (e.key === 'Escape' && !pop.hidden) pop.hidden = true; });
+  _subHelpPop = pop;
+  return pop;
+}
+function mkSubHelpBtn(role) {
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'lg-help-btn sub-help-btn';
+  btn.textContent = '?';
+  btn.title = 'Status logic';
+  btn.addEventListener('click', e => {
+    e.stopPropagation();
+    const pop = ensureSubHelpPop();
+    if (!pop.hidden && pop.dataset.role === role) { pop.hidden = true; return; }
+    pop.innerHTML = subHelpHTML(role);
+    pop.dataset.role = role;
+    const cls = pop.querySelector('.lhp-close');
+    if (cls) cls.addEventListener('click', () => { pop.hidden = true; });
+    const r = btn.getBoundingClientRect();
+    pop.style.top = (r.bottom + 6) + 'px';
+    pop.style.right = Math.max(12, window.innerWidth - r.right) + 'px';
+    pop.hidden = false;
+  });
+  return btn;
+}
+
 // ── Delegated click on tree — NO inline handlers ──
 treeBody.addEventListener('click', e => {
   const row = e.target.closest('[data-id]');
@@ -2035,7 +2090,7 @@ function dSender(s) {
         wrap.appendChild(hint);
         return wrap;
       })();
-  db.appendChild(section('Subscription', null, subBox(active?'→':'⊝', 'Routed to receiver', rxValEl, badge(active?'b-active':'b-inactive', active?'ACTIVE':'INACTIVE'))));
+  db.appendChild(sectionWithToggle('Subscription', null, [mkSubHelpBtn('sender')], subBox(active?'→':'⊝', 'Routed to receiver', rxValEl, badge(active?'b-active':'b-inactive', active?'ACTIVE':'IDLE'))));
 
   // Sender info
   const nodeEl = node
@@ -2258,7 +2313,7 @@ function dReceiver(r) {
         wrap2.appendChild(hint2);
         return wrap2;
       })();
-  db.appendChild(section('Subscription', null, subBox(active?'←':'⊝', 'Receiving from sender', txValEl, badge(active?'b-active':'b-inactive', active?'ACTIVE':'INACTIVE'))));
+  db.appendChild(sectionWithToggle('Subscription', null, [mkSubHelpBtn('receiver')], subBox(active?'←':'⊝', 'Receiving from sender', txValEl, badge(active?'b-active':'b-inactive', active?'ROUTED':'UNROUTED'))));
 
   // IS-05 Connection fetch — cache-aware, preserves minimized state
   const connWrap = el('div', 'is05-wrap');
