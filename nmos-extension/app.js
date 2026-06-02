@@ -1533,7 +1533,7 @@ function kvTable(rows) {
         td.style.fontFamily = 'var(--mono)';
         // IP addresses match the left tree's multicast size (9px); other
         // technical strings (UUIDs, URNs, URLs) stay at 12px for readability.
-        td.style.fontSize = /^\d{1,3}\.\d{1,3}\.\d/.test(v) ? '11px' : '12px';
+        td.style.fontSize = /^\d{1,3}\.\d{1,3}\.\d/.test(v) ? '9px' : '12px';
       }
       // Add copy-on-click for UUIDs
       if (isUuid(v) || (k === 'ID' || k === 'id' || displayKey === 'id')) {
@@ -1677,11 +1677,12 @@ function subBox(arrow, labelText, valueEl, statusBadge) {
   return box;
 }
 
-function srCard(navKey, dotColor, name, sub, badges) {
+function srCard(navKey, dotColor, name, sub, badges, lit) {
   const card = el('div', 'sr-card');
   card.dataset.nav = navKey;
   const dot = el('div', 'sr-card-dot');
   dot.style.background = dotColor;
+  if (lit) dot.style.boxShadow = '0 0 6px ' + dotColor + ', 0 0 2px ' + dotColor;
   card.appendChild(dot);
   const info = el('div', 'sr-card-info');
   info.appendChild(txt('div', 'sr-card-name', name));
@@ -1965,7 +1966,7 @@ function dDevice(d) {
       const flow = S.data.flows.find(f => f.id === s.flow_id);
       const fmt  = flow ? formatType(flow.format) : '';
       const active = !!(s.subscription && s.subscription.active);
-      grid.appendChild(srCard('sender:'+s.id, active?'var(--text1)':'var(--text2)', s.label||shortId(s.id), (active?'ACTIVE':'IDLE')+(fmt?' · '+fmt.toUpperCase():''), [fmt?badge('b-'+fmt,fmt):null, statusBadge(active, active?'ACTIVE':'IDLE')]));
+      grid.appendChild(srCard('sender:'+s.id, active?fmtColor(fmt).fg:'var(--text2)', s.label||shortId(s.id), (active?'ACTIVE':'IDLE')+(fmt?' · '+fmt.toUpperCase():''), [fmt?badge('b-'+fmt,fmt):null, statusBadge(active, active?'ACTIVE':'IDLE')], active));
     });
     db.appendChild(section('Senders', ds.length, grid));
   }
@@ -1975,7 +1976,7 @@ function dDevice(d) {
     dr.forEach(r => {
       const fmt  = formatType(r.format || '');
       const active = !!(r.subscription && r.subscription.active);
-      grid.appendChild(srCard('receiver:'+r.id, active?'var(--teal)':'var(--text2)', r.label||shortId(r.id), (active?'ROUTED':'UNROUTED')+(fmt?' · '+fmt.toUpperCase():''), [fmt?badge('b-'+fmt,fmt):null, statusBadge(active, active?'ROUTED':'UNROUTED')]));
+      grid.appendChild(srCard('receiver:'+r.id, active?fmtColor(fmt).fg:'var(--text2)', r.label||shortId(r.id), (active?'ROUTED':'UNROUTED')+(fmt?' · '+fmt.toUpperCase():''), [fmt?badge('b-'+fmt,fmt):null, statusBadge(active, active?'ROUTED':'UNROUTED')], active));
     });
     db.appendChild(section('Receivers', dr.length, grid));
   }
@@ -2055,12 +2056,8 @@ function dSender(s) {
     subscription: 'Subscription', version: 'Version', caps: 'Caps',
   };
   const sRows = [];
-  // Friendly view: fixed logical order. JSON-keys view: mirror the raw JSON key order.
-  const S_ORDER = ['id', 'label', 'description', 'device_id', 'flow_id', 'format', 'transport',
-                   'interface_bindings', 'subscription', 'tags', 'version', 'manifest_href', 'caps'];
-  const sKeys = S.jsonKeys
-    ? Object.keys(s)
-    : [...S_ORDER.filter(k => k in s), ...Object.keys(s).filter(k => !S_ORDER.includes(k))];
+  // Both views follow the node's own key order; only the labels/formatting differ.
+  const sKeys = Object.keys(s);
   sKeys.forEach(k => {
     if (S.jsonKeys) {
       const v = s[k];
@@ -2407,12 +2404,8 @@ function dReceiver(r) {
     caps: 'Caps', tags: 'Tags', subscription: 'Subscription', version: 'Version',
   };
   const rRows = [];
-  // Friendly view: fixed logical order. JSON-keys view: mirror the raw JSON key order.
-  const R_ORDER = ['id', 'label', 'description', 'device_id', 'flow_id', 'format', 'transport',
-                   'interface_bindings', 'subscription', 'tags', 'version', 'manifest_href', 'caps'];
-  const rKeys = S.jsonKeys
-    ? Object.keys(r)
-    : [...R_ORDER.filter(k => k in r), ...Object.keys(r).filter(k => !R_ORDER.includes(k))];
+  // Both views follow the node's own key order; only the labels/formatting differ.
+  const rKeys = Object.keys(r);
   rKeys.forEach(k => {
     if (S.jsonKeys) {
       const v = r[k];
