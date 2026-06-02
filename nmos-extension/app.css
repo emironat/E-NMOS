@@ -746,9 +746,9 @@ body {
   top: 0;
   bottom: 0;
   width: 3px;
-  background: var(--blue);
+  background: var(--accent, var(--blue));
   border-radius: 3px 0 0 3px;
-  opacity: 0.5;
+  opacity: 0.6;
 }
 
 .sh {

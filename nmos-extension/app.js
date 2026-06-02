@@ -1803,6 +1803,7 @@ function mkDetailBadge(word, color, bgColor, fontSize) {
 // ── NODE DETAIL ──
 function dNode(n) {
   if (!n) return;
+  detailPanel.style.setProperty('--accent', '#2ec8b8');
   const clocks   = n.clocks || [];
   const interfaces = n.interfaces || [];
   const endpoints= (n.api && n.api.endpoints) || [];
@@ -1931,6 +1932,7 @@ function dNode(n) {
 // ── DEVICE DETAIL ──
 function dDevice(d) {
   if (!d) return;
+  detailPanel.style.setProperty('--accent', '#9b72f0');
   const ds   = S.data.senders.filter(s => s.device_id === d.id);
   const dr   = S.data.receivers.filter(r => r.device_id === d.id);
   const node = S.data.nodes.find(n => n.id === d.node_id) || (S.data.nodes.length === 1 ? S.data.nodes[0] : null);
@@ -1994,6 +1996,7 @@ function dSender(s) {
 
   const dh = el('div', 'dh');
   const sCol = fmtColor(fmt);
+  detailPanel.style.setProperty('--accent', sCol.fg);
   dh.appendChild(mkDetailBadge('SENDER', sCol.fg, sCol.bg, 11));
   const dhInfo = el('div', 'dh-info');
   dhInfo.appendChild(txt('div', 'dh-title', s.label || shortId(s.id)));
@@ -2183,6 +2186,7 @@ function dReceiver(r) {
 
   const dh = el('div', 'dh');
   const rCol = fmtColor(fmt);
+  detailPanel.style.setProperty('--accent', rCol.fg);
   dh.appendChild(mkDetailBadge('RECEIVER', rCol.fg, rCol.bg, 9));
   const dhInfo = el('div', 'dh-info');
   dhInfo.appendChild(txt('div', 'dh-title', r.label || shortId(r.id)));
