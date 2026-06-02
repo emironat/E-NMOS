@@ -359,6 +359,13 @@ body {
 .tree-legend .lg-active { background: var(--green); box-shadow: 0 0 4px var(--green); }
 .tree-legend .lg-idle { background: transparent; border: 1.5px solid var(--text2); }
 .tree-legend .leg-dot { margin: 0; }
+#mcast-status { margin-left: auto; gap: 5px; }
+#mcast-status.mc-loading { color: var(--text1); }
+#mcast-status.mc-warn { color: var(--amber); }
+#mcast-status.mc-done { color: var(--green); }
+#mcast-status .mc-spin { display: inline-block; width: 8px; height: 8px; border: 1.5px solid var(--text2); border-top-color: var(--blue); border-radius: 50%; animation: mcspin .7s linear infinite; }
+@keyframes mcspin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { #mcast-status .mc-spin { animation: none; } }
 .tree-search input {
   flex: 1;
   background: var(--bg2);

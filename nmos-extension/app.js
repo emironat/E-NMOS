@@ -613,10 +613,6 @@ async function doQuery(silent = false) {
           if (sorted.length) connVer = sorted[0];
         }
       } catch(e) {}
-      // Fetch IS-05 active for ALL receivers (active or not) — an idle receiver
-      // can still have a configured multicast address, same as senders.
-      const allRx = (S.data.receivers || []);
-
       // Debounced renderTree — wait 300ms after last result before re-rendering
       let renderTimer = null;
       const debouncedRender = () => {
@@ -624,46 +620,83 @@ async function doQuery(silent = false) {
         renderTimer = setTimeout(() => { renderTimer = null; renderTree(); }, 300);
       };
 
+      // Progress + timeout indicator for the background multicast fetch
+      const mcTotal = (S.data.receivers || []).length + (S.data.senders || []).length;
+      let mcDone = 0, mcTimeout = 0, mcStatusTimer = null;
+      const updMcStatus = () => {
+        const elS = document.getElementById('mcast-status');
+        if (!elS || S._mcastQueryId !== mcastQueryId) return;
+        if (mcDone < mcTotal) {
+          if (!elS.querySelector('.mc-spin')) {
+            elS.className = 'lg-item mc-loading';
+            elS.innerHTML = '<span class="mc-spin"></span><span class="mc-txt"></span>';
+          }
+          const t = elS.querySelector('.mc-txt');
+          if (t) t.textContent = 'multicast ' + mcDone + '/' + mcTotal;
+        } else if (mcTimeout > 0) {
+          elS.className = 'lg-item mc-warn';
+          elS.textContent = '⚠ ' + mcTimeout + ' of ' + mcTotal + ' timed out';
+        } else {
+          elS.className = 'lg-item mc-done';
+          elS.textContent = '✓ multicast loaded';
+          if (mcStatusTimer) clearTimeout(mcStatusTimer);
+          mcStatusTimer = setTimeout(() => {
+            const e2 = document.getElementById('mcast-status');
+            if (e2 && S._mcastQueryId === mcastQueryId) { e2.textContent = ''; e2.className = 'lg-item'; }
+          }, 4000);
+        }
+      };
+      const elS0 = document.getElementById('mcast-status');
+      if (elS0) { elS0.textContent = ''; elS0.className = 'lg-item'; }
+      if (mcTotal) updMcStatus();
+
+      // Fetch one item's IS-05 /active connection, with a timeout so a single
+      // hung request can't stall its whole batch.
+      const fetchActive = async (kind, id) => {
+        const ctrl = new AbortController();
+        let timedOut = false;
+        const timer = setTimeout(() => { timedOut = true; ctrl.abort(); }, 7000);
+        try {
+          const url = origin + '/x-nmos/connection/' + connVer + '/single/' + kind + 's/' + id + '/active';
+          const res = await fetch(url, { signal: ctrl.signal });
+          if (!res.ok) return null;
+          return await res.json();
+        } catch(e) { if (timedOut) mcTimeout++; return null; }
+        finally { clearTimeout(timer); mcDone++; updMcStatus(); }
+      };
+
       // fetch in small parallel batches to avoid flooding the device
       const BATCH = 6;
-      for (let i = 0; i < allRx.length; i += BATCH) {
-        const batch = allRx.slice(i, i + BATCH);
-        await Promise.all(batch.map(async r => {
-          try {
-            const url = origin + '/x-nmos/connection/' + connVer + '/single/receivers/' + r.id + '/active';
-            const res = await fetch(url);
-            if (!res.ok) return;
-            const d = await res.json();
-            if (d.transport_params && d.transport_params[0] && d.transport_params[0].multicast_ip) {
-              if (S._mcastQueryId !== mcastQueryId) return; // new query fired, discard
-              S.rxIs05Cache[r.id] = d;
-              debouncedRender();
-            }
-          } catch(e) {}
-        }));
-      }
+      const runBatches = async (items, handler) => {
+        for (let i = 0; i < items.length; i += BATCH) {
+          await Promise.all(items.slice(i, i + BATCH).map(handler));
+        }
+      };
 
-      // Fetch IS-05 active for ALL senders (active or not) — senders have a
-      // configured multicast address even when idle.
-      const allSnd = S.data.senders || [];
-      for (let i = 0; i < allSnd.length; i += BATCH) {
-        const batch = allSnd.slice(i, i + BATCH);
-        await Promise.all(batch.map(async s => {
-          try {
-            const url = origin + '/x-nmos/connection/' + connVer + '/single/senders/' + s.id + '/active';
-            const res = await fetch(url);
-            if (!res.ok) return;
-            const d = await res.json();
-            const sIp = d.transport_params && d.transport_params[0] &&
-                        (d.transport_params[0].destination_ip || d.transport_params[0].multicast_ip);
-            if (sIp) {
-              if (S._mcastQueryId !== mcastQueryId) return;
-              S.sndIs05Cache[s.id] = d;
-              debouncedRender();
-            }
-          } catch(e) {}
-        }));
-      }
+      // Receivers and senders both carry a configured multicast address even
+      // when idle. Fetch both kinds concurrently so a slow or stuck receiver
+      // batch can never block sender population.
+      const rxJob = runBatches(S.data.receivers || [], async r => {
+        const d = await fetchActive('receiver', r.id);
+        if (!d) return;
+        if (d.transport_params && d.transport_params[0] && d.transport_params[0].multicast_ip) {
+          if (S._mcastQueryId !== mcastQueryId) return; // new query fired, discard
+          S.rxIs05Cache[r.id] = d;
+          debouncedRender();
+        }
+      });
+      const sndJob = runBatches(S.data.senders || [], async s => {
+        const d = await fetchActive('sender', s.id);
+        if (!d) return;
+        const sIp = d.transport_params && d.transport_params[0] &&
+                    (d.transport_params[0].destination_ip || d.transport_params[0].multicast_ip);
+        if (sIp) {
+          if (S._mcastQueryId !== mcastQueryId) return;
+          S.sndIs05Cache[s.id] = d;
+          debouncedRender();
+        }
+      });
+      await Promise.all([rxJob, sndJob]);
 
       // Final render once all batches done
       if (S._mcastQueryId === mcastQueryId) {
