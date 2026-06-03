@@ -695,35 +695,46 @@ async function doQuery(silent = false) {
         } else if (mcTimeout > 0) {
           stopMcTick();
           elS.className = 'lg-item mc-warn';
-          elS.textContent = '⚠ ' + mcTimeout + ' of ' + mcTotal + ' timed out · ' + mcElapsed();
+          elS.textContent = '⚠ multicast ' + (mcTotal - mcTimeout) + '/' + mcTotal + ' · ' + mcElapsed() + ' · ' + mcTimeout + ' timed out';
         } else {
           stopMcTick();
           elS.className = 'lg-item mc-done';
-          elS.textContent = '✓ multicast loaded · ' + mcElapsed();
-          if (mcStatusTimer) clearTimeout(mcStatusTimer);
-          mcStatusTimer = setTimeout(() => {
-            const e2 = document.getElementById('mcast-status');
-            if (e2 && S._mcastQueryId === mcastQueryId) { e2.textContent = ''; e2.className = 'lg-item'; }
-          }, 4000);
+          elS.textContent = '✓ multicast ' + mcTotal + '/' + mcTotal + ' · ' + mcElapsed();
         }
       };
       const elS0 = document.getElementById('mcast-status');
       if (elS0) { elS0.textContent = ''; elS0.className = 'lg-item'; }
       if (mcTotal) updMcStatus();
 
-      // Fetch one item's IS-05 /active connection, with a timeout so a single
-      // hung request can't stall its whole batch.
-      const fetchActive = async (kind, id) => {
-        const ctrl = new AbortController();
+      // Fetch one item's IS-05 /active connection. The Connection API may live on
+      // a different port/host than the Node API, so resolve candidate bases from
+      // the owning device's sr-ctrl control and try them in order. A total per-item
+      // budget (with a per-candidate cap) keeps one hung request from stalling the
+      // batch while still allowing a fallback candidate to be tried.
+      const fetchActive = async (kind, item) => {
+        const dev = (S.data.devices || []).find(d => d.id === item.device_id);
+        const bases = connBasesForDevice(dev, origin, connVer);
+        const deadline = Date.now() + 7000;
         let timedOut = false;
-        const timer = setTimeout(() => { timedOut = true; ctrl.abort(); }, 7000);
         try {
-          const url = origin + '/x-nmos/connection/' + connVer + '/single/' + kind + 's/' + id + '/active';
-          const res = await fetch(url, { signal: ctrl.signal });
-          if (!res.ok) return null;
-          return await res.json();
-        } catch(e) { if (timedOut) mcTimeout++; return null; }
-        finally { clearTimeout(timer); mcDone++; updMcStatus(); }
+          for (const base of bases) {
+            const remaining = deadline - Date.now();
+            if (remaining <= 0) { timedOut = true; break; }
+            const ctrl = new AbortController();
+            const timer = setTimeout(() => ctrl.abort(), Math.min(remaining, 4000));
+            try {
+              const res = await fetch(base + 'single/' + kind + 's/' + item.id + '/active', { signal: ctrl.signal });
+              clearTimeout(timer);
+              if (res.ok) return await res.json();
+              // non-OK (e.g. 404 on a fallback candidate): try the next one
+            } catch (e) {
+              clearTimeout(timer);
+              if (Date.now() >= deadline) { timedOut = true; break; }
+              // otherwise a fast failure/abort — try the next candidate
+            }
+          }
+          return null;
+        } finally { if (timedOut) mcTimeout++; mcDone++; updMcStatus(); }
       };
 
       // fetch in small parallel batches to avoid flooding the device
@@ -738,7 +749,7 @@ async function doQuery(silent = false) {
       // when idle. Fetch both kinds concurrently so a slow or stuck receiver
       // batch can never block sender population.
       const rxJob = runBatches(S.data.receivers || [], async r => {
-        const d = await fetchActive('receiver', r.id);
+        const d = await fetchActive('receiver', r);
         if (!d) return;
         if (d.transport_params && d.transport_params[0] && d.transport_params[0].multicast_ip) {
           if (S._mcastQueryId !== mcastQueryId) return; // new query fired, discard
@@ -747,7 +758,7 @@ async function doQuery(silent = false) {
         }
       });
       const sndJob = runBatches(S.data.senders || [], async s => {
-        const d = await fetchActive('sender', s.id);
+        const d = await fetchActive('sender', s);
         if (!d) return;
         const sIp = d.transport_params && d.transport_params[0] &&
                     (d.transport_params[0].destination_ip || d.transport_params[0].multicast_ip);
@@ -770,6 +781,56 @@ async function doQuery(silent = false) {
     treeBody.innerHTML = '<div style="color:var(--amber);font-size:13px;padding:40px 20px;text-align:center;line-height:2;">⚠<br><span style="font-size:11px;color:var(--amber);">Could not connect</span><br><span style="color:var(--text2);font-size:9px;">' + escapeHtml(err.message||'Check the URL and try again') + '</span></div>';
     detailPanel.innerHTML = '<div style="color:var(--amber);font-size:13px;padding:80px 20px;text-align:center;line-height:2;">⚠<br><span style="font-size:11px;">Could not connect</span><br><span style="color:var(--text2);font-size:9px;">' + escapeHtml(err.message||'Check the URL and try again') + '</span></div>';
   } finally { btnQuery.disabled = false; }
+}
+
+// ── IS-05 Connection API base resolution ───────────────────────────────────
+// The Connection API (IS-05) is often served on a different port/host than the
+// Node API (IS-04). The authoritative location is the owning Device's `controls`
+// entry typed urn:x-nmos:control:sr-ctrl/*. We return candidate base URLs in
+// priority order: advertised sr-ctrl href(s) newest-version-first, then the same
+// href with its host swapped to the node host we actually reached (covers devices
+// that advertise an unreachable/secondary interface), then same-origin fallbacks
+// across known versions (single-port nodes / no controls). This works in Node API
+// mode and Query/registry mode alike, registered or not, since `controls` travels
+// with the Device resource either way. Each base ends with '/'.
+function ctrlTypeVer(type) {
+  const m = /\/v(\d+)\.(\d+)/.exec(type || '');
+  return m ? parseInt(m[1], 10) * 1000 + parseInt(m[2], 10) : -1;
+}
+function connBasesForDevice(dev, nodeOrigin, fallbackVer) {
+  const bases = [];
+  const seen = new Set();
+  const add = (u) => {
+    if (!u) return;
+    if (!/\/$/.test(u)) u += '/';
+    if (!seen.has(u)) { seen.add(u); bases.push(u); }
+  };
+  let nodeHost = null;
+  try { nodeHost = new URL(nodeOrigin).hostname; } catch (e) {}
+  if (dev && Array.isArray(dev.controls)) {
+    dev.controls
+      .filter(c => c && typeof c.type === 'string' &&
+                   c.type.indexOf('urn:x-nmos:control:sr-ctrl') === 0 && c.href)
+      .sort((a, b) => ctrlTypeVer(b.type) - ctrlTypeVer(a.type))
+      .forEach(c => {
+        let abs = null;
+        try { abs = new URL(c.href, nodeOrigin).href; } catch (e) {}
+        if (!abs) return;
+        add(abs); // as advertised by the device
+        if (nodeHost) {
+          try {
+            const cu = new URL(abs);
+            if (cu.hostname !== nodeHost) { cu.hostname = nodeHost; add(cu.href); }
+          } catch (e) {}
+        }
+      });
+  }
+  // Same-origin fallbacks: detected version first, then known versions newest→oldest.
+  const vers = [];
+  if (fallbackVer) vers.push(String(fallbackVer).replace(/\/$/, ''));
+  ['v1.3', 'v1.2', 'v1.1', 'v1.0'].forEach(v => vers.push(v));
+  vers.forEach(v => add(nodeOrigin + '/x-nmos/connection/' + v + '/'));
+  return bases;
 }
 
 function setStatus(s, t) {
@@ -2338,11 +2399,44 @@ function dReceiver(r) {
   const isMinimized = !!(S.rxIs05Minimized && S.rxIs05Minimized[r.id]);
   const cachedData  = S.rxIs05Cache[r.id] || null;
 
+  // Endpoint tag shown in the IS-05 section header — surfaces the resolved
+  // Connection API host:port + version, and flags when it differs from the Node API.
+  const epTag = el('span', 'is05-ep');
+  epTag.style.display = 'none';
+  function setEpTag(usedUrl) {
+    if (!usedUrl) { epTag.style.display = 'none'; return; }
+    let host = '', ver = '', nodeHost = '';
+    try { host = new URL(usedUrl).host; } catch (e) {}
+    const vm = usedUrl.match(/\/connection\/(v\d+\.\d+)\//);
+    if (vm) ver = vm[1];
+    try { nodeHost = new URL(S.apiBase).host; } catch (e) {}
+    epTag.innerHTML = '';
+    epTag.appendChild(document.createTextNode('⇄ ' + host));
+    if (ver) epTag.appendChild(txt('span', 'is05-ep-v', ' · ' + ver));
+    if (nodeHost && host && host !== nodeHost) {
+      const np = nodeHost.indexOf(':') >= 0 ? ':' + nodeHost.split(':').pop() : nodeHost;
+      const f = txt('span', 'is05-ep-flag', '≠ node ' + np);
+      f.title = 'Connection API is on a different host:port than the Node API (' + nodeHost + ')';
+      epTag.appendChild(document.createTextNode(' '));
+      epTag.appendChild(f);
+    }
+    epTag.title = 'IS-05 Connection API base — resolved from the device sr-ctrl control';
+    epTag.style.display = '';
+  }
+
   function setConnBtnOpen()   { connBtn.textContent='▲ Minimize Connection'; connBtn.style.background='var(--teal)'; connBtn.style.color='#000'; }
   function setConnBtnClosed() { connBtn.textContent='⬇ IS-05 Connection';   connBtn.style.background='var(--teal-dim)'; connBtn.style.color='var(--teal)'; }
 
   function populateConnBox(data, usedUrl) {
     connBox.innerHTML = '';
+    setEpTag(usedUrl);
+    if (usedUrl) {
+      const base = usedUrl.split('/single/')[0].replace(/\/$/, '') + '/';
+      const epRow = el('div', 'is05-ep-row');
+      epRow.appendChild(txt('span', 'is05-ep-row-k', 'Endpoint'));
+      epRow.appendChild(txt('span', 'is05-ep-row-v', base));
+      connBox.appendChild(epRow);
+    }
     const urlEl = txt('div', '', usedUrl || '');
     urlEl.style.cssText = 'font-family:var(--mono);font-size:9px;color:var(--text2);padding-top:4px;padding-bottom:8px;word-break:break-all;';
     connBox.appendChild(urlEl);
@@ -2410,23 +2504,26 @@ function dReceiver(r) {
     (async () => {
       const urlObj = new URL(S.apiBase);
       const origin = urlObj.protocol + '//' + urlObj.host;
-      const urls = [
-        origin+'/x-nmos/connection/v1.0/single/receivers/'+r.id+'/active',
-        origin+'/x-nmos/connection/v1.1/single/receivers/'+r.id+'/active',
-        origin+'/x-nmos/connection/v1.2/single/receivers/'+r.id+'/active',
-      ];
+      // Best-effort newest version on the node origin (only used by fallbacks).
+      let connVer = 'v1.2';
       try {
         const verRes = await fetch(origin+'/x-nmos/connection/');
         if (verRes.ok) {
           const vers = await verRes.json();
           const sorted = vers.map(v=>v.replace(/\/$/,'')).sort((a,b)=>a.localeCompare(b,undefined,{numeric:true})).reverse();
-          if (sorted.length) urls.unshift(origin+'/x-nmos/connection/'+sorted[0]+'/single/receivers/'+r.id+'/active');
+          if (sorted.length) connVer = sorted[0];
         }
       } catch(e) {}
+      // Resolve from the device's sr-ctrl control href (handles split node/connection
+      // ports), with host-swap and same-origin fallbacks.
+      const urls = connBasesForDevice(dev, origin, connVer)
+        .map(b => b + 'single/receivers/' + r.id + '/active');
       let data=null, lastErr='', usedUrl='';
       for (const url of urls) {
-        try { const res=await fetch(url); if(res.ok){data=await res.json();usedUrl=url;break;} lastErr='HTTP '+res.status+' — '+url; }
-        catch(e) { lastErr=e.message+' — '+url; }
+        const ctrl = new AbortController();
+        const timer = setTimeout(() => ctrl.abort(), 5000);
+        try { const res=await fetch(url, { signal: ctrl.signal }); clearTimeout(timer); if(res.ok){data=await res.json();usedUrl=url;break;} lastErr='HTTP '+res.status+' — '+url; }
+        catch(e) { clearTimeout(timer); lastErr=(e.name==='AbortError'?'timeout':e.message)+' — '+url; }
       }
       if (data) { data._usedUrl=usedUrl; S.rxIs05Cache[r.id]=data; populateConnBox(data,usedUrl); }
       else {
@@ -2523,7 +2620,7 @@ function dReceiver(r) {
     }
   });
   db.appendChild(sectionWithToggle('Receiver info', null, [mkJsonToggle(), mkLookupToggle()], kvTable(rRows)));
-  db.appendChild(section('IS-05 Connection', null, connWrap));
+  db.appendChild(sectionWithToggle('IS-05 Connection', null, [epTag], connWrap));
 
   // If routed, show sender details inline
   if (tx) {

@@ -1091,4 +1091,10 @@ body {
 .is05-box > *:not(.kv):not(.conn-skeleton):not(pre) { padding-left: 28px; padding-right: 16px; }
 .is05-box > .conn-skeleton { padding-left: 28px; padding-right: 16px; }
 .is05-box > pre { margin-left: 28px; margin-right: 16px; }
+.is05-ep { display: inline-flex; align-items: center; gap: 5px; font-family: var(--mono); font-size: 9px; padding: 3px 8px; border-radius: 5px; background: var(--teal-dim); border: 1px solid var(--teal); color: var(--teal); white-space: nowrap; }
+.is05-ep-v { color: #1f8f84; }
+.is05-ep-flag { font-size: 8px; font-weight: 700; padding: 1px 5px; border-radius: 3px; background: var(--amber-dim); border: 1px solid var(--amber); color: var(--amber); }
+.is05-ep-row { display: flex; gap: 14px; font-size: 10px; padding-top: 4px; padding-bottom: 9px; border-bottom: 1px solid var(--bg3); margin-bottom: 8px; }
+.is05-ep-row-k { color: var(--teal); width: 96px; flex-shrink: 0; font-weight: 600; }
+.is05-ep-row-v { color: var(--teal); font-family: var(--mono); word-break: break-all; }
 .sdp-wrap { padding: 8px 0 12px 0; }
