@@ -2275,14 +2275,14 @@ function dReceiver(r) {
           if (m && m[1] !== '0.0.0.0:0') {
             const wrap = el('div', '');
             const v = txt('div', 'sub-none', 'Non-NMOS source: ' + m[1]);
-            v.style.color = 'var(--amber)';
+            v.style.color = '#ccb784';
             wrap.appendChild(v);
             const idLine = txt('div', '', 'sender_id: null');
             idLine.style.cssText = 'font-size:9px;color:var(--text2);margin-top:3px;font-family:var(--mono);';
             wrap.appendChild(idLine);
             // Hint to use IS-05 fetch
             const hint = txt('div', '', '⬇ Check IS-05 Connection below for full sender details');
-            hint.style.cssText = 'font-size:9px;color:var(--amber);margin-top:5px;font-family:var(--mono);cursor:pointer;text-decoration:underline;opacity:0.8;';
+            hint.style.cssText = 'font-size:9px;color:#ccb784;margin-top:5px;font-family:var(--mono);cursor:pointer;text-decoration:underline;opacity:0.8;';
             hint.addEventListener('click', () => {
               const btn = document.getElementById('is05-conn-btn-' + r.id);
               if (btn) { btn.scrollIntoView({behavior:'smooth', block:'center'}); btn.click(); }
@@ -2295,10 +2295,10 @@ function dReceiver(r) {
         if (active) {
           const wrap = el('div', '');
           const idLine = txt('div', 'sub-none', 'sender_id: null — routed outside IS-05');
-          idLine.style.color = 'var(--amber)';
+          idLine.style.color = '#ccb784';
           wrap.appendChild(idLine);
           const hint = txt('div', '', '⬇ Check IS-05 Connection below for full sender details');
-          hint.style.cssText = 'font-size:9px;color:var(--amber);margin-top:5px;font-family:var(--mono);cursor:pointer;text-decoration:underline;opacity:0.8;';
+          hint.style.cssText = 'font-size:9px;color:#ccb784;margin-top:5px;font-family:var(--mono);cursor:pointer;text-decoration:underline;opacity:0.8;';
           hint.addEventListener('click', () => {
             const btn = document.getElementById('is05-conn-btn-' + r.id);
             if (btn) { btn.scrollIntoView({behavior:'smooth', block:'center'}); btn.click(); }
