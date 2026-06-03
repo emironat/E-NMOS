@@ -2084,9 +2084,11 @@ function dSender(s) {
       })()
     : (() => {
         const wrap = el('div', '');
-        wrap.appendChild(txt('div', 'sub-none', 'No receiver registered via IS-05'));
+        const none = txt('div', 'sub-none', 'No receiver registered via IS-05');
+        if (active) none.style.color = '#ccb784';
+        wrap.appendChild(none);
         const hint = txt('div', '', active ? 'Stream is active — receiver may be routed outside NMOS' : 'Stream is inactive');
-        hint.style.cssText = 'font-size:9px;color:var(--text2);margin-top:3px;font-family:var(--mono);';
+        hint.style.cssText = 'font-size:9px;color:' + (active ? '#ccb784' : 'var(--text2)') + ';margin-top:3px;font-family:var(--mono);';
         wrap.appendChild(hint);
         return wrap;
       })();
