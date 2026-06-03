@@ -722,10 +722,11 @@ async function doQuery(silent = false) {
             if (remaining <= 0) { timedOut = true; break; }
             const ctrl = new AbortController();
             const timer = setTimeout(() => ctrl.abort(), Math.min(remaining, 4000));
+            const url = base + 'single/' + kind + 's/' + item.id + '/active';
             try {
-              const res = await fetch(base + 'single/' + kind + 's/' + item.id + '/active', { signal: ctrl.signal });
+              const res = await fetch(url, { signal: ctrl.signal });
               clearTimeout(timer);
-              if (res.ok) return await res.json();
+              if (res.ok) { const j = await res.json(); if (j && typeof j === 'object') j._usedUrl = url; return j; }
               // non-OK (e.g. 404 on a fallback candidate): try the next one
             } catch (e) {
               clearTimeout(timer);
