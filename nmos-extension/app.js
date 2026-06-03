@@ -677,23 +677,29 @@ async function doQuery(silent = false) {
 
       // Progress + timeout indicator for the background multicast fetch
       const mcTotal = (S.data.receivers || []).length + (S.data.senders || []).length;
-      let mcDone = 0, mcTimeout = 0, mcStatusTimer = null;
+      const mcStart = Date.now();
+      const mcElapsed = () => ((Date.now() - mcStart) / 1000).toFixed(1) + 's';
+      let mcDone = 0, mcTimeout = 0, mcStatusTimer = null, mcTick = null;
+      const stopMcTick = () => { if (mcTick) { clearInterval(mcTick); mcTick = null; } };
       const updMcStatus = () => {
         const elS = document.getElementById('mcast-status');
-        if (!elS || S._mcastQueryId !== mcastQueryId) return;
+        if (!elS || S._mcastQueryId !== mcastQueryId) { stopMcTick(); return; }
         if (mcDone < mcTotal) {
           if (!elS.querySelector('.mc-spin')) {
             elS.className = 'lg-item mc-loading';
             elS.innerHTML = '<span class="mc-spin"></span><span class="mc-txt"></span>';
           }
           const t = elS.querySelector('.mc-txt');
-          if (t) t.textContent = 'multicast ' + mcDone + '/' + mcTotal;
+          if (t) t.textContent = 'multicast ' + mcDone + '/' + mcTotal + ' · ' + mcElapsed();
+          if (!mcTick) mcTick = setInterval(updMcStatus, 200);
         } else if (mcTimeout > 0) {
+          stopMcTick();
           elS.className = 'lg-item mc-warn';
-          elS.textContent = '⚠ ' + mcTimeout + ' of ' + mcTotal + ' timed out';
+          elS.textContent = '⚠ ' + mcTimeout + ' of ' + mcTotal + ' timed out · ' + mcElapsed();
         } else {
+          stopMcTick();
           elS.className = 'lg-item mc-done';
-          elS.textContent = '✓ multicast loaded';
+          elS.textContent = '✓ multicast loaded · ' + mcElapsed();
           if (mcStatusTimer) clearTimeout(mcStatusTimer);
           mcStatusTimer = setTimeout(() => {
             const e2 = document.getElementById('mcast-status');
@@ -1860,6 +1866,7 @@ function mkDetailBadge(word, color, bgColor, fontSize) {
 function dNode(n) {
   if (!n) return;
   detailPanel.style.setProperty('--accent', '#2ec8b8');
+  detailPanel.style.setProperty('--accent-op', '0.6');
   const clocks   = n.clocks || [];
   const interfaces = n.interfaces || [];
   const endpoints= (n.api && n.api.endpoints) || [];
@@ -1989,6 +1996,7 @@ function dNode(n) {
 function dDevice(d) {
   if (!d) return;
   detailPanel.style.setProperty('--accent', '#9b72f0');
+  detailPanel.style.setProperty('--accent-op', '0.6');
   const ds   = S.data.senders.filter(s => s.device_id === d.id);
   const dr   = S.data.receivers.filter(r => r.device_id === d.id);
   const node = S.data.nodes.find(n => n.id === d.node_id) || (S.data.nodes.length === 1 ? S.data.nodes[0] : null);
@@ -2053,6 +2061,7 @@ function dSender(s) {
   const dh = el('div', 'dh');
   const sCol = fmtColor(fmt);
   detailPanel.style.setProperty('--accent', sCol.fg);
+  detailPanel.style.setProperty('--accent-op', active ? '0.85' : '0.28');
   dh.appendChild(mkDetailBadge('SENDER', sCol.fg, sCol.bg, 11));
   const dhInfo = el('div', 'dh-info');
   dhInfo.appendChild(txt('div', 'dh-title', s.label || shortId(s.id)));
@@ -2241,6 +2250,7 @@ function dReceiver(r) {
   const dh = el('div', 'dh');
   const rCol = fmtColor(fmt);
   detailPanel.style.setProperty('--accent', rCol.fg);
+  detailPanel.style.setProperty('--accent-op', active ? '0.85' : '0.28');
   dh.appendChild(mkDetailBadge('RECEIVER', rCol.fg, rCol.bg, 9));
   const dhInfo = el('div', 'dh-info');
   dhInfo.appendChild(txt('div', 'dh-title', r.label || shortId(r.id)));

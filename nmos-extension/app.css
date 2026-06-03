@@ -785,7 +785,7 @@ body {
   width: 3px;
   background: var(--accent, var(--blue));
   border-radius: 3px 0 0 3px;
-  opacity: 0.6;
+  opacity: var(--accent-op, 0.6);
 }
 
 .sh {
