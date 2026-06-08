@@ -752,22 +752,16 @@ async function doQuery(silent = false) {
       const rxJob = runBatches(S.data.receivers || [], async r => {
         const d = await fetchActive('receiver', r);
         if (!d) return;
-        if (d.transport_params && d.transport_params[0] && d.transport_params[0].multicast_ip) {
-          if (S._mcastQueryId !== mcastQueryId) return; // new query fired, discard
-          S.rxIs05Cache[r.id] = d;
-          debouncedRender();
-        }
+        if (S._mcastQueryId !== mcastQueryId) return; // new query fired, discard
+        S.rxIs05Cache[r.id] = d;
+        debouncedRender();
       });
       const sndJob = runBatches(S.data.senders || [], async s => {
         const d = await fetchActive('sender', s);
         if (!d) return;
-        const sIp = d.transport_params && d.transport_params[0] &&
-                    (d.transport_params[0].destination_ip || d.transport_params[0].multicast_ip);
-        if (sIp) {
-          if (S._mcastQueryId !== mcastQueryId) return;
-          S.sndIs05Cache[s.id] = d;
-          debouncedRender();
-        }
+        if (S._mcastQueryId !== mcastQueryId) return;
+        S.sndIs05Cache[s.id] = d;
+        debouncedRender();
       });
       await Promise.all([rxJob, sndJob]);
 
@@ -808,6 +802,15 @@ function connBasesForDevice(dev, nodeOrigin, fallbackVer) {
   };
   let nodeHost = null;
   try { nodeHost = new URL(nodeOrigin).hostname; } catch (e) {}
+  // 1. Same-origin at the detected version FIRST. The node host is known-reachable
+  //    (we just loaded the node from it), so this either hits fast or 404s fast —
+  //    it never hangs. This keeps a slow/unreachable advertised control href from
+  //    burning the per-item fetch budget on single-port nodes.
+  const primaryVer = fallbackVer ? String(fallbackVer).replace(/\/$/, '') : 'v1.2';
+  add(nodeOrigin + '/x-nmos/connection/' + primaryVer + '/');
+  // 2. Device-advertised sr-ctrl control href(s), newest version first — this is
+  //    what makes split node/connection ports (e.g. EVIPG) work. Reached only after
+  //    the fast same-origin probe above misses.
   if (dev && Array.isArray(dev.controls)) {
     dev.controls
       .filter(c => c && typeof c.type === 'string' &&
@@ -826,11 +829,8 @@ function connBasesForDevice(dev, nodeOrigin, fallbackVer) {
         }
       });
   }
-  // Same-origin fallbacks: detected version first, then known versions newest→oldest.
-  const vers = [];
-  if (fallbackVer) vers.push(String(fallbackVer).replace(/\/$/, ''));
-  ['v1.3', 'v1.2', 'v1.1', 'v1.0'].forEach(v => vers.push(v));
-  vers.forEach(v => add(nodeOrigin + '/x-nmos/connection/' + v + '/'));
+  // 3. Other same-origin versions, newest→oldest, as a last resort.
+  ['v1.3', 'v1.2', 'v1.1', 'v1.0'].forEach(v => add(nodeOrigin + '/x-nmos/connection/' + v + '/'));
   return bases;
 }
 
